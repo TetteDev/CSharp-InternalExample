@@ -13,6 +13,7 @@ namespace MyInjectableLibrary
 				if (ThisProcess.Handle == IntPtr.Zero) throw new InvalidOperationException("Host Process Handle was IntPtr.Zero");
 				if (location == IntPtr.Zero || numBytes < 1) return new byte[] {};
 
+
 				byte[] returnedBytes = new byte[numBytes];
 				Marshal.Copy(location, returnedBytes, 0, numBytes);
 				return returnedBytes;

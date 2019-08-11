@@ -28,8 +28,8 @@ namespace MyInjectableLibrary
 			}
 		    else
 		    {
-				Console.WriteLine($"Read 10 bytes from location 0x{ThisProcess.MainModule.BaseAddress.ToInt32():X}:");
-			    Console.WriteLine(BitConverter.ToString(test).Replace(" ", " "));
+				Console.WriteLine($"Read 10 bytes from location 0x{ThisProcess.MainModule.BaseAddress.ToInt32():X8}:");
+			    Console.WriteLine($"	{BitConverter.ToString(test).Replace("-", " ")}");
 		    }
 	    }
 	}
