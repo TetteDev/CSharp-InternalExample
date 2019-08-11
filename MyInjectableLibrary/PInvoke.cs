@@ -157,5 +157,9 @@ namespace MyInjectableLibrary
 		[DllImport("kernel32.dll", SetLastError = true)]
 		public static extern bool VirtualProtect(IntPtr lpAddress, int dwSize,
 			MemoryProtectionFlags flNewProtect, out MemoryProtectionFlags lpflOldProtect);
+
+		[DllImport("kernel32.dll", SetLastError = true)]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool FreeLibrary(IntPtr hModule);
 	}
 }
