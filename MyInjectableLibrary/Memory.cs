@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using static MyInjectableLibrary.Main;
 
 namespace MyInjectableLibrary
@@ -121,13 +122,37 @@ namespace MyInjectableLibrary
 				}
 				return ret;
 			}
+
+			public static string UnsafeReadString(IntPtr address, Encoding encoding, int maxLength = 256)
+			{
+				var data = UnsafeReadBytes(address, maxLength);
+				var text = new string(encoding.GetChars(data));
+				if (text.Contains("\0"))
+					text = text.Substring(0, text.IndexOf('\0'));
+				return text;
+			}
+
+			public T UnsafeReadMultilevelPointer<T>(IntPtr address, params IntPtr[] offsets) where T : struct
+			{
+				if (offsets.Length == 0)
+				{
+					throw new InvalidOperationException("Cannot read a value from unspecified addresses.");
+				}
+
+				var temp = UnsafeRead<IntPtr>(address);
+
+				for (int i = 0; i < offsets.Length - 1; i++)
+				{
+					temp = UnsafeRead<IntPtr>(temp + (int)offsets[i]);
+				}
+				return UnsafeRead<T>(temp + (int)offsets[offsets.Length - 1]);
+			}
 			#endregion
 		}
 
 		public class Writer
 		{
 			#region Unsafe Methods
-
 			public static unsafe void UnsafeWriteBytes(IntPtr location, byte[] buffer)
 			{
 				var ptr = (byte*)location;
@@ -137,14 +162,25 @@ namespace MyInjectableLibrary
 				}
 			}
 
-			
-			public static void UnsafeWrite<T>(IntPtr address, T value)
+			public static void UnsafeWrite<T>(IntPtr address, T value, bool virtualProtectNeeded = true)
 			{
-				PInvoke.VirtualProtect(address, SizeCache<T>.Size, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out PInvoke.MemoryProtectionFlags old);
-				Marshal.StructureToPtr(value, address, false);
-				PInvoke.VirtualProtect(address, SizeCache<T>.Size, old, out old);
+				if (virtualProtectNeeded)
+				{
+					PInvoke.VirtualProtect(address, SizeCache<T>.Size, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out PInvoke.MemoryProtectionFlags old);
+					Marshal.StructureToPtr(value, address, false);
+					PInvoke.VirtualProtect(address, SizeCache<T>.Size, old, out old);
+				}
+				else
+				{
+					Marshal.StructureToPtr(value, address, false);
+				}
 			}
-			
+
+			public static void UnsafeWriteString(IntPtr address, string str, Encoding encoding)
+			{
+				byte[] bytes = encoding.GetBytes(str);
+				UnsafeWriteBytes(address, bytes);
+			}
 
 			public void WriteArray<T>(IntPtr address, T[] array) where T : struct
 			{
@@ -156,7 +192,123 @@ namespace MyInjectableLibrary
 				}
 			}
 			#endregion
+		}
 
+		public class Pattern
+		{
+			public static unsafe IntPtr FindPattern(IntPtr address, int bufferSize, string pattern, bool resultAbsolute = true)
+			{
+				if (bufferSize < 1) return IntPtr.Zero;
+				byte[] buffer = Reader.UnsafeReadBytes(address, bufferSize);
+
+				if (buffer == null || buffer.Length < 1) return IntPtr.Zero;
+
+				var tmpSplitPattern = pattern.TrimStart(' ').TrimEnd(' ').Split(' ');
+
+				var tmpPattern = new byte[tmpSplitPattern.Length];
+				var tmpMask = new byte[tmpSplitPattern.Length];
+
+				for (var i = 0; i < tmpSplitPattern.Length; i++)
+				{
+					var ba = tmpSplitPattern[i];
+
+					if (ba == "??" || ba.Length == 1 && ba == "?")
+					{
+						tmpMask[i] = 0x00;
+						tmpSplitPattern[i] = "0x00";
+					}
+					else if (char.IsLetterOrDigit(ba[0]) && ba[1] == '?')
+					{
+						tmpMask[i] = 0xF0;
+						tmpSplitPattern[i] = ba[0] + "0";
+					}
+					else if (char.IsLetterOrDigit(ba[1]) && ba[0] == '?')
+					{
+						tmpMask[i] = 0x0F;
+						tmpSplitPattern[i] = "0" + ba[1];
+					}
+					else
+					{
+						tmpMask[i] = 0xFF;
+					}
+				}
+
+				for (var i = 0; i < tmpSplitPattern.Length; i++)
+					tmpPattern[i] = (byte)(Convert.ToByte(tmpSplitPattern[i], 16) & tmpMask[i]);
+
+				if (tmpMask.Length != tmpPattern.Length)
+					throw new ArgumentException($"{nameof(pattern)}.Length != {nameof(tmpMask)}.Length");
+
+				int result = 0 - tmpPattern.Length;
+				fixed (byte* pPacketBuffer = buffer)
+				{
+					do
+					{
+						result = HelperMethods.FindPattern(pPacketBuffer, buffer.Length, tmpPattern, tmpMask, result + tmpPattern.Length);
+						if (result >= 0)
+							return resultAbsolute ? IntPtr.Add(address, result) : new IntPtr(result);
+					} while (result != -1);
+				}
+				return IntPtr.Zero;
+			}
+			public static unsafe IntPtr FindPattern(ProcessModule processModule, string pattern, bool resultAbsolute = true)
+			{
+				byte[] buffer = Reader.UnsafeReadBytes(processModule.BaseAddress, processModule.ModuleMemorySize);
+				if (buffer == null || buffer.Length < 1) return IntPtr.Zero;
+
+				var tmpSplitPattern = pattern.TrimStart(' ').TrimEnd(' ').Split(' ');
+
+				var tmpPattern = new byte[tmpSplitPattern.Length];
+				var tmpMask = new byte[tmpSplitPattern.Length];
+
+				for (var i = 0; i < tmpSplitPattern.Length; i++)
+				{
+					var ba = tmpSplitPattern[i];
+
+					if (ba == "??" || ba.Length == 1 && ba == "?")
+					{
+						tmpMask[i] = 0x00;
+						tmpSplitPattern[i] = "0x00";
+					}
+					else if (char.IsLetterOrDigit(ba[0]) && ba[1] == '?')
+					{
+						tmpMask[i] = 0xF0;
+						tmpSplitPattern[i] = ba[0] + "0";
+					}
+					else if (char.IsLetterOrDigit(ba[1]) && ba[0] == '?')
+					{
+						tmpMask[i] = 0x0F;
+						tmpSplitPattern[i] = "0" + ba[1];
+					}
+					else
+					{
+						tmpMask[i] = 0xFF;
+					}
+				}
+
+				for (var i = 0; i < tmpSplitPattern.Length; i++)
+					tmpPattern[i] = (byte)(Convert.ToByte(tmpSplitPattern[i], 16) & tmpMask[i]);
+
+				if (tmpMask.Length != tmpPattern.Length)
+					throw new ArgumentException($"{nameof(pattern)}.Length != {nameof(tmpMask)}.Length");
+
+				int result = 0 - tmpPattern.Length;
+				fixed (byte* pPacketBuffer = buffer)
+				{
+					do
+					{
+						result = HelperMethods.FindPattern(pPacketBuffer, buffer.Length, tmpPattern, tmpMask, result + tmpPattern.Length);
+						if (result >= 0)
+							return resultAbsolute ? IntPtr.Add(processModule.BaseAddress, result) : new IntPtr(result);
+					} while (result != -1);
+				}
+				return IntPtr.Zero;
+			}
+		}
+
+		public class Functions
+		{
+			
 		}
 	}
 }

@@ -50,6 +50,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="DebugConsole.cs" />
+    <Compile Include="HelperMethods.cs" />
     <Compile Include="Main.cs" />
     <Compile Include="Memory.cs" />
     <Compile Include="PInvoke.cs" />
