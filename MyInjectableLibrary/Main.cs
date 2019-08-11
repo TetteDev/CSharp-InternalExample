@@ -18,18 +18,16 @@ namespace MyInjectableLibrary
 			    File.WriteAllText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "hello_from_" + ThisProcess.ProcessName + ".txt"), $"Failed allocating console!");
 				return;
 		    }
-
 		    Console.Title = $"{ThisProcess.MainWindowTitle} - Debugging Console";
-
-		    byte[] test = Memory.Reader.UnsafeReadBytes(ThisProcess.MainModule.BaseAddress, 10);
-		    if (test == null || test.Length < 1)
+		    try
 		    {
-			    Console.WriteLine("Failed reading bytes!");
-			}
-		    else
+			    int test = Memory.Reader.UnsafeRead<int>(ThisProcess.MainModule.BaseAddress);
+			    Console.WriteLine($"UnsafeRead<{test.GetType()}> @ 0x{ThisProcess.MainModule.BaseAddress.ToInt32():X8}: {test}");
+		    }
+		    catch (Exception ex)
 		    {
-				Console.WriteLine($"Read 10 bytes from location 0x{ThisProcess.MainModule.BaseAddress.ToInt32():X8}:");
-			    Console.WriteLine($"	{BitConverter.ToString(test).Replace("-", " ")}");
+			    File.WriteAllText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "hello_from_" + ThisProcess.ProcessName + ".txt"), ex.Message);
+			    Console.WriteLine("Error Message written to file!");
 		    }
 	    }
 	}
