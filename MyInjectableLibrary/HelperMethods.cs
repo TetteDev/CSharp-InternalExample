@@ -38,4 +38,16 @@ namespace MyInjectableLibrary
 			return foundIndex;
 		}
 	}
+
+	public static class ProcessExtensions
+	{
+		public static ProcessModule FindProcessModule(this Process obj, string moduleName)
+		{
+			foreach (ProcessModule pm in obj.Modules)
+				if (string.Equals(pm.ModuleName, moduleName, StringComparison.CurrentCultureIgnoreCase))
+					return pm;
+
+			return null;
+		}
+	}
 }

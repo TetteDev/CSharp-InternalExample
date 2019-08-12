@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -26,89 +27,15 @@ namespace MyInjectableLibrary
 				return ret;
 			}
 
-			[HandleProcessCorruptedStateExceptions]
-			public static unsafe T UnsafeRead<T>(IntPtr address)
+			public static unsafe T UnsafeRead<T>(IntPtr address, bool isRelative = false)
 			{
-				try
+				bool requiresMarshal = SizeCache<T>.TypeRequiresMarshal;
+				var size = requiresMarshal ? SizeCache<T>.Size : Unsafe.SizeOf<T>();
+
+				var buffer = UnsafeReadBytes(address, size);
+				fixed (byte* b = buffer)
 				{
-					if (address == IntPtr.Zero)
-					{
-						throw new InvalidOperationException("Cannot retrieve a value at address 0");
-					}
-
-					object ret;
-					switch (SizeCache<T>.TypeCode)
-					{
-						case TypeCode.Object:
-
-							if (SizeCache<T>.IsIntPtr)
-							{
-								return (T)(object)*(IntPtr*)address;
-							}
-
-							// If the type doesn't require an explicit Marshal call, then ignore it and memcpy the fuckin thing.
-							if (!SizeCache<T>.TypeRequiresMarshal)
-							{
-								T o = default(T);
-								void* ptr = SizeCache<T>.GetUnsafePtr(ref o);
-
-								PInvoke.MoveMemory(ptr, (void*)address, SizeCache<T>.Size);
-
-								return o;
-							}
-
-							// All System.Object's require marshaling!
-							ret = Marshal.PtrToStructure(address, typeof(T));
-							break;
-						case TypeCode.Boolean:
-							ret = *(byte*)address != 0;
-							break;
-						case TypeCode.Char:
-							ret = *(char*)address;
-							break;
-						case TypeCode.SByte:
-							ret = *(sbyte*)address;
-							break;
-						case TypeCode.Byte:
-							ret = *(byte*)address;
-							break;
-						case TypeCode.Int16:
-							ret = *(short*)address;
-							break;
-						case TypeCode.UInt16:
-							ret = *(ushort*)address;
-							break;
-						case TypeCode.Int32:
-							ret = *(int*)address;
-							break;
-						case TypeCode.UInt32:
-							ret = *(uint*)address;
-							break;
-						case TypeCode.Int64:
-							ret = *(long*)address;
-							break;
-						case TypeCode.UInt64:
-							ret = *(ulong*)address;
-							break;
-						case TypeCode.Single:
-							ret = *(float*)address;
-							break;
-						case TypeCode.Double:
-							ret = *(double*)address;
-							break;
-						case TypeCode.Decimal:
-							// Probably safe to remove this. I'm unaware of anything that actually uses "decimal" that would require memory reading...
-							ret = *(decimal*)address;
-							break;
-						default:
-							throw new ArgumentOutOfRangeException();
-					}
-					return (T)ret;
-				}
-				catch (AccessViolationException ex)
-				{
-					Trace.WriteLine("Access Violation on " + address + " with type " + typeof(T).Name);
-					return default(T);
+					return requiresMarshal ? Marshal.PtrToStructure<T>(new IntPtr(b)) : Unsafe.Read<T>(b);
 				}
 			}
 
@@ -135,9 +62,7 @@ namespace MyInjectableLibrary
 			public T UnsafeReadMultilevelPointer<T>(IntPtr address, params IntPtr[] offsets) where T : struct
 			{
 				if (offsets.Length == 0)
-				{
-					throw new InvalidOperationException("Cannot read a value from unspecified addresses.");
-				}
+					return UnsafeRead<T>(address, false);
 
 				var temp = UnsafeRead<IntPtr>(address);
 
@@ -162,17 +87,34 @@ namespace MyInjectableLibrary
 				}
 			}
 
-			public static void UnsafeWrite<T>(IntPtr address, T value, bool virtualProtectNeeded = true)
+			public static unsafe void UnsafeWrite<T>(IntPtr address, T value, bool virtualProtectNeeded = true)
 			{
-				if (virtualProtectNeeded)
+				bool requiresMarshal = SizeCache<T>.TypeRequiresMarshal;
+				if (requiresMarshal)
 				{
-					PInvoke.VirtualProtect(address, SizeCache<T>.Size, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out PInvoke.MemoryProtectionFlags old);
-					Marshal.StructureToPtr(value, address, false);
-					PInvoke.VirtualProtect(address, SizeCache<T>.Size, old, out old);
+					if (virtualProtectNeeded)
+					{
+						PInvoke.VirtualProtect(address, SizeCache<T>.Size, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out PInvoke.MemoryProtectionFlags old);
+						Marshal.StructureToPtr(value, address, false);
+						PInvoke.VirtualProtect(address, SizeCache<T>.Size, old, out old);
+					}
+					else
+					{
+						Marshal.StructureToPtr(value, address, false);
+					}
 				}
 				else
 				{
-					Marshal.StructureToPtr(value, address, false);
+					if (virtualProtectNeeded)
+					{
+						PInvoke.VirtualProtect(address, SizeCache<T>.Size, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out PInvoke.MemoryProtectionFlags old);
+						Unsafe.Write((void*)address, value);
+						PInvoke.VirtualProtect(address, SizeCache<T>.Size, old, out old);
+					}
+					else
+					{
+						Unsafe.Write((void*)address, value);
+					}
 				}
 			}
 
@@ -182,7 +124,7 @@ namespace MyInjectableLibrary
 				UnsafeWriteBytes(address, bytes);
 			}
 
-			public void WriteArray<T>(IntPtr address, T[] array) where T : struct
+			public void UnsafeWriteArray<T>(IntPtr address, T[] array) where T : struct
 			{
 				int size = SizeCache<T>.Size;
 				for (int i = 0; i < array.Length; i++)
@@ -190,6 +132,14 @@ namespace MyInjectableLibrary
 					T val = array[i];
 					UnsafeWrite(address + (i * size), val);
 				}
+			}
+
+			public void UnsafeWriteMultiLevelPointer<T>(IntPtr address, T value, params IntPtr[] offsets)
+			{
+				if (offsets.Length == 0)
+					UnsafeWrite(address, value);
+
+				// 
 			}
 			#endregion
 		}
@@ -253,6 +203,7 @@ namespace MyInjectableLibrary
 			}
 			public static unsafe IntPtr FindPattern(ProcessModule processModule, string pattern, bool resultAbsolute = true)
 			{
+				if (processModule == null) return IntPtr.Zero;
 				byte[] buffer = Reader.UnsafeReadBytes(processModule.BaseAddress, processModule.ModuleMemorySize);
 				if (buffer == null || buffer.Length < 1) return IntPtr.Zero;
 

@@ -25,9 +25,11 @@ namespace MyInjectableLibrary
 
 		    try
 		    {
-			    Console.Title = $"{ThisProcess.MainWindowTitle} - Debugging Console";
-			    byte t = UnsafeRead<byte>(new IntPtr(0x0040000));
-			    Console.WriteLine($"Result: {(int) t:X}");
+			    ProcessModule pm = ThisProcess.FindProcessModule("panoramauiclient.dll");
+			    if (pm != null)
+			    {
+
+			    }
 		    }
 		    catch (Exception e)
 		    {
@@ -36,16 +38,6 @@ namespace MyInjectableLibrary
 		    
 		}
 
-	    public static unsafe T UnsafeRead<T>(IntPtr address, bool isRelative = false)
-	    {
-		    bool requiresMarshal = SizeCache<T>.TypeRequiresMarshal;
-		    var size = requiresMarshal ? SizeCache<T>.Size : Unsafe.SizeOf<T>();
-
-		    var buffer = Memory.Reader.UnsafeReadBytes(address, size);
-		    fixed (byte* b = buffer)
-		    {
-			    return requiresMarshal ? Marshal.PtrToStructure<T>(new IntPtr(b)) : Unsafe.Read<T>(b);
-		    }
-		}
+	    
     }
 }
