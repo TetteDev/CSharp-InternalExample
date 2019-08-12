@@ -10,4 +10,6 @@ If you use ExtremeInjector, make sure to change the calling convention of your e
 
 MyInjectableLibrary is built with x86 as its target architecture so make sure to inject it in a 32bit host process (ExtremeInjector will warn you anyways about this)
 
+## Highest Supported .NET Framework version 4.5.2
+
 ![alt text](https://i.imgur.com/KSXDXUF.png "Showcase")
