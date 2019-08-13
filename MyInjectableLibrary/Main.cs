@@ -38,8 +38,6 @@ namespace MyInjectableLibrary
 			//FormStarter = new Thread(StartForm);
 			//FormStarter.Start();
 
-			
-
 			if (!DebugConsole.InitiateDebugConsole())
 		    {
 			    File.WriteAllText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "hello_from_" + ThisProcess.ProcessName + ".txt"), $"Failed allocating console!");
@@ -93,15 +91,16 @@ namespace MyInjectableLibrary
 				    continue;
 				}
 
-			    EnemyCrosshairBase = Memory.Reader.UnsafeRead<int>(new IntPtr(ClientDLL.BaseAddress.ToInt32() + signatures.dwEntityList + (LocalPlayerStruct.CrosshairID - 1) * 0x10));
-			    if (EnemyCrosshairBase == 0 || EnemyCrosshairBase == -1)
+			    EnemyCrosshairBase = *(int*) (ClientDLL.BaseAddress.ToInt32() + signatures.dwEntityList + (LocalPlayerStruct.CrosshairID - 1) * 0x10);
+
+				if (EnemyCrosshairBase == 0 || EnemyCrosshairBase == -1)
 			    {
 				    Thread.Sleep(25);
 				    continue;
 				}
 
-			    Enemy_Crosshair_t str = Memory.Reader.UnsafeRead<Enemy_Crosshair_t>(new IntPtr(EnemyCrosshairBase));
-
+			    Enemy_Crosshair_t str = *(Enemy_Crosshair_t*)(EnemyCrosshairBase);
+			    
 			    if (!str.Dormant && str.Health > 0 && str.Team != LocalPlayerStruct.Team)
 			    {
 				    *(int*)(ClientDLL.BaseAddress.ToInt32() + signatures.dwForceAttack) = 6;
@@ -113,7 +112,7 @@ namespace MyInjectableLibrary
 		    }
 	    }
 
-	    public static void ReaderLoop()
+	    public static unsafe void ReaderLoop()
 	    {
 			Console.WriteLine($"ReaderLoop method has been executed (Thread Started)!");
 		    while (true)
@@ -127,12 +126,12 @@ namespace MyInjectableLibrary
 					    continue;
 				    }
 
-					ClientState = Memory.Reader.UnsafeRead<int>((IntPtr)(EngineDLL.BaseAddress.ToInt32() + signatures.dwClientState));
-					ClientStateStruct = Memory.Reader.UnsafeRead<ClientState_t>((IntPtr) ClientState);
+					ClientState = *(int*)(EngineDLL.BaseAddress.ToInt32() + signatures.dwClientState);
+					ClientStateStruct = *(ClientState_t*)ClientState;
 
 					if (ClientStateStruct.GameState == GameState.GAME)
 					{
-						LocalPlayer = Memory.Reader.UnsafeRead<int>((IntPtr)(ClientDLL.BaseAddress.ToInt32() + signatures.dwLocalPlayer));
+						LocalPlayer = *(int*) (ClientDLL.BaseAddress.ToInt32() + signatures.dwLocalPlayer);
 
 						if (LocalPlayer == 0 || LocalPlayer == -1)
 						{
@@ -141,7 +140,8 @@ namespace MyInjectableLibrary
 							continue;
 						}
 
-						LocalPlayerStruct = Memory.Reader.UnsafeRead<LocalPlayer_t>((IntPtr) LocalPlayer);
+						LocalPlayerStruct = *(LocalPlayer_t*) (LocalPlayer);
+
 						Console.Title = $"Localplayer: 0x{LocalPlayer:X8}";
 						Thread.Sleep(25);
 					}
@@ -158,8 +158,7 @@ namespace MyInjectableLibrary
 					Console.WriteLine(e.Message);
 			    }
 		    }
-		    Console.WriteLine($"ReaderLoop method has been returned (Thread Joined)!");
-		}
+	    }
 
 		public static void StartForm()
 	    {
