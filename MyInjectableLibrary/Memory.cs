@@ -12,27 +12,25 @@ namespace MyInjectableLibrary
 	{
 		public class Reader
 		{
+			
 			#region Unsafe Methods
-			public static unsafe byte[] UnsafeReadBytes(IntPtr location, int numBytes)
+			public static unsafe byte[] UnsafeReadBytes(IntPtr location, uint numBytes)
 			{
-				if (ThisProcess.Handle == IntPtr.Zero) throw new InvalidOperationException("Host Process Handle was IntPtr.Zero");
-				if (location == IntPtr.Zero || numBytes < 1) return new byte[] { };
+				byte[] buff = new byte[numBytes];
 
-				var ret = new byte[numBytes];
-				var ptr = (byte*)location;
-				for (int i = 0; i < numBytes; i++)
+				fixed (void* bufferPtr = buff)
 				{
-					ret[i] = ptr[i];
+					Unsafe.CopyBlockUnaligned(bufferPtr, (void*) location, numBytes);
+					return buff;
 				}
-				return ret;
 			}
 
-			public static unsafe T UnsafeRead<T>(IntPtr address, bool isRelative = false)
+			public static unsafe T UnsafeRead<T>(IntPtr address)
 			{
 				bool requiresMarshal = SizeCache<T>.TypeRequiresMarshal;
 				var size = requiresMarshal ? SizeCache<T>.Size : Unsafe.SizeOf<T>();
 
-				var buffer = UnsafeReadBytes(address, size);
+				var buffer = UnsafeReadBytes(address, (uint)size);
 				fixed (byte* b = buffer)
 				{
 					return requiresMarshal ? Marshal.PtrToStructure<T>(new IntPtr(b)) : Unsafe.Read<T>(b);
@@ -52,7 +50,7 @@ namespace MyInjectableLibrary
 
 			public static string UnsafeReadString(IntPtr address, Encoding encoding, int maxLength = 256)
 			{
-				var data = UnsafeReadBytes(address, maxLength);
+				var data = UnsafeReadBytes(address, (uint)maxLength);
 				var text = new string(encoding.GetChars(data));
 				if (text.Contains("\0"))
 					text = text.Substring(0, text.IndexOf('\0'));
@@ -62,7 +60,7 @@ namespace MyInjectableLibrary
 			public T UnsafeReadMultilevelPointer<T>(IntPtr address, params IntPtr[] offsets) where T : struct
 			{
 				if (offsets.Length == 0)
-					return UnsafeRead<T>(address, false);
+					return UnsafeRead<T>(address);
 
 				var temp = UnsafeRead<IntPtr>(address);
 
@@ -87,7 +85,7 @@ namespace MyInjectableLibrary
 				}
 			}
 
-			public static unsafe void UnsafeWrite<T>(IntPtr address, T value, bool virtualProtectNeeded = true)
+			public static unsafe void UnsafeWrite<T>(IntPtr address, T value, bool virtualProtectNeeded = false)
 			{
 				bool requiresMarshal = SizeCache<T>.TypeRequiresMarshal;
 				if (requiresMarshal)
@@ -149,7 +147,7 @@ namespace MyInjectableLibrary
 			public static unsafe IntPtr FindPattern(IntPtr address, int bufferSize, string pattern, bool resultAbsolute = true)
 			{
 				if (bufferSize < 1) return IntPtr.Zero;
-				byte[] buffer = Reader.UnsafeReadBytes(address, bufferSize);
+				byte[] buffer = Reader.UnsafeReadBytes(address, (uint)bufferSize);
 
 				if (buffer == null || buffer.Length < 1) return IntPtr.Zero;
 
@@ -204,7 +202,7 @@ namespace MyInjectableLibrary
 			public static unsafe IntPtr FindPattern(ProcessModule processModule, string pattern, bool resultAbsolute = true)
 			{
 				if (processModule == null) return IntPtr.Zero;
-				byte[] buffer = Reader.UnsafeReadBytes(processModule.BaseAddress, processModule.ModuleMemorySize);
+				byte[] buffer = Reader.UnsafeReadBytes(processModule.BaseAddress, (uint)processModule.ModuleMemorySize);
 				if (buffer == null || buffer.Length < 1) return IntPtr.Zero;
 
 				var tmpSplitPattern = pattern.TrimStart(' ').TrimEnd(' ').Split(' ');

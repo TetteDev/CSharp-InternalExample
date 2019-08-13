@@ -1,6 +1,7 @@
 ﻿using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace MyInjectableLibrary
 {
@@ -161,5 +162,22 @@ namespace MyInjectableLibrary
 		[DllImport("kernel32.dll", SetLastError = true)]
 		[return: MarshalAs(UnmanagedType.Bool)]
 		public static extern bool FreeLibrary(IntPtr hModule);
+
+		[DllImport("kernel32.dll")]
+		public static extern IntPtr CreateRemoteThread(IntPtr hProcess,
+			IntPtr lpThreadAttributes, uint dwStackSize, IntPtr lpStartAddress,
+			IntPtr lpParameter, uint dwCreationFlags, out IntPtr lpThreadId);
+
+		[DllImport("Kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+		public static extern unsafe uint CreateThread(
+			IntPtr lpThreadAttributes,
+			uint dwStackSize,
+			IntPtr lpStartAddress,
+			IntPtr lpParameter,
+			uint dwCreationFlags,
+			out IntPtr lpThreadId);
+
+		[DllImport("kernel32.dll", SetLastError = true)]
+		internal static extern IntPtr GetProcAddress(IntPtr moduleHandle, string procName);
 	}
 }

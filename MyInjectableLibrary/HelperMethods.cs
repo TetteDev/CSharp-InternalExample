@@ -49,5 +49,10 @@ namespace MyInjectableLibrary
 
 			return null;
 		}
+
+		public static List<ProcessModule> ToList(this ProcessModule[] obj)
+		{
+			return obj.Cast<ProcessModule>().ToList();
+		}
 	}
 }
