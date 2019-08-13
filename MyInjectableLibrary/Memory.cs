@@ -257,7 +257,10 @@ namespace MyInjectableLibrary
 
 		public class Functions
 		{
-			
+			public static T GetFunction<T>(IntPtr address)
+			{
+				return Marshal.GetDelegateForFunctionPointer<T>(address);
+			}
 		}
 	}
 }

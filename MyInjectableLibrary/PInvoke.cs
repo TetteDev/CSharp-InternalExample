@@ -179,5 +179,8 @@ namespace MyInjectableLibrary
 
 		[DllImport("kernel32.dll", SetLastError = true)]
 		internal static extern IntPtr GetProcAddress(IntPtr moduleHandle, string procName);
+
+		[DllImport("kernel32.dll", CharSet = CharSet.Auto)]
+		public static extern IntPtr GetModuleHandle(string lpModuleName);
 	}
 }

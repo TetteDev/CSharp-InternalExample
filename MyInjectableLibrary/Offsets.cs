@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Runtime.InteropServices;
+using MyInjectableLibrary;
 
 // 2019-08-09 10:38:09.564787500 UTC
 
@@ -145,6 +146,35 @@ namespace hazedumper
 		public const Int32 set_abs_origin = 0x1CA7F0;
 	}
 
+	public class InterfaceStuff
+	{
+		public static CreateInterface GetCreateInterfaceFunction(string moduleName)
+		{
+			return Memory.Functions.GetFunction<CreateInterface>(PInvoke.GetProcAddress(PInvoke.GetModuleHandle(moduleName), "CreateInterface"));
+		}
+
+		public static IntPtr GetInterfacePtr(string interfaceName, CreateInterface cInterface)
+		{
+			string interfaceVersion = "0";
+
+			for (int i = 0; i <= 99; i++)
+			{
+				var tempInterface = interfaceName + interfaceVersion + i;
+				var funcPtr = cInterface(tempInterface, 0);
+				if (funcPtr != IntPtr.Zero)
+				{
+					return funcPtr;
+				}
+				if (i >= 99 && interfaceVersion == "0")
+				{
+					interfaceVersion = "00";
+					i = 0;
+				}
+			}
+			return IntPtr.Zero;
+		}
+	}
+
 	[StructLayout(LayoutKind.Explicit)]
 	public struct LocalPlayer_t
 	{
@@ -209,6 +239,122 @@ namespace hazedumper
 		[FieldOffset(netvars.m_iTeamNum)] public int Team;
 
 		[FieldOffset(signatures.m_bDormant)] public bool Dormant;
+	}
+
+
+
+
+	public delegate IntPtr CreateInterface(string name, int ptr);
+
+	public unsafe class Interface
+	{
+		public IntPtr BaseAdr;
+
+		public Interface(IntPtr baseAddr)
+		{
+			BaseAdr = baseAddr;
+		}
+
+		internal T GetInterfaceFunction<T>(int index)
+		{
+			// return Memory.Functions.GetFunction<T>(Memory.ReadPointer(*(int*)(BaseAdr) + index * 4));
+			return Memory.Functions.GetFunction<T>((IntPtr)(*(int*)(*(int*)(BaseAdr) + index * 4)));
+		}
+
+		internal IntPtr GetInterfaceFunctionAddress(int index)
+		{
+			return *(IntPtr*) (BaseAdr.ToInt32() + index * 4);
+		}
+
+		public void SetInterfacePointer(int index, IntPtr newPtr)
+		{
+			//IntPtr adr = GetInterfaceAddress(index);
+			//PInvoke.VirtualProtect(adr, 4, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out PInvoke.MemoryProtectionFlags oldProtect);
+			//Marshal.WriteIntPtr(adr, newPtr);
+			//PInvoke.VirtualProtect(adr, 4, oldProtect, out PInvoke.MemoryProtectionFlags discard);
+		}
+	}
+
+	public class Surface : Interface
+	{
+		public delegate int DrawSetColorDlg(int r, int g, int b, int a);
+		public delegate int DrawLineDlg(int x0, int y0, int x1, int y1);
+		public delegate int DrawFilledRectDlg(int x0, int y0, int x1, int y1);
+
+		public DrawSetColorDlg DrawSetColor;
+		public DrawLineDlg DrawLine;
+		public DrawFilledRectDlg DrawFilledRect;
+
+		public Surface(IntPtr baseAdr) : base(baseAdr)
+		{
+			DrawSetColor = GetInterfaceFunction<DrawSetColorDlg>(15);
+			DrawLine = GetInterfaceFunction<DrawLineDlg>(19);
+			DrawFilledRect = GetInterfaceFunction<DrawFilledRectDlg>(16);
+		}
+	}
+
+	public class Engine : Interface
+	{
+		public delegate void GetScreenSizeDlg(out int width, out int height);
+		public delegate void ClientCmd_UnrestrictedDlg(string text, int flags);
+		public delegate int GetLocalPlayerDlg();
+		//public delegate void GetViewAnglesDlg(out Vector vector);
+		//public delegate void SetViewAngleDlg(Vector vector);
+
+		public GetScreenSizeDlg GetScreenSize;
+		public ClientCmd_UnrestrictedDlg ClientCmd_Unrestricted;
+		public GetLocalPlayerDlg GetLocalPlayer;
+		//public GetViewAnglesDlg GetViewAngles;
+		//public SetViewAngleDlg SetViewAngles;
+
+		public Engine(IntPtr baseAdr) : base(baseAdr)
+		{
+			GetScreenSize = GetInterfaceFunction<GetScreenSizeDlg>(5);
+			ClientCmd_Unrestricted = GetInterfaceFunction<ClientCmd_UnrestrictedDlg>(114);
+			GetLocalPlayer = GetInterfaceFunction<GetLocalPlayerDlg>(12);
+			//GetViewAngles = GetInterfaceFunction<GetViewAnglesDlg>(18);
+			//SetViewAngles = GetInterfaceFunction<SetViewAngleDlg>(19);
+		}
+	}
+
+	[StructLayout(LayoutKind.Explicit)]
+	public struct GlobalVars_t
+	{
+		[FieldOffset(0x0000)] public float RealTime; // 0x00
+
+		[FieldOffset(0x0004)] public int FrameCount;
+
+		[FieldOffset(0x0008)] public float AbsoluteFrametime;
+
+		[FieldOffset(0x000C)] public float AbsoluteFrameStartTimestddev;
+
+		[FieldOffset(0x0010)] public float Curtime;
+
+		[FieldOffset(0x0014)] public float Frametime;
+
+		[FieldOffset(0x0018)] public int MaxClients;
+
+		[FieldOffset(0x001c)] public int TickCount;
+
+		[FieldOffset(0x0020)] public float Interval_Per_Tick;
+
+		[FieldOffset(0x0024)] public float Interpolation_Amount;
+
+		[FieldOffset(0x0028)] public int SimTicksThisFrame;
+
+		[FieldOffset(0x002c)] public int Network_Protocol;
+
+		[FieldOffset(0x0030)] public IntPtr pSaveData;
+
+		[FieldOffset(0x0031)] public bool m_bClient;
+
+		[FieldOffset(0x0032)] public bool m_bRemoteClient;
+
+		[FieldOffset(0x0036)] public int nTimestampNetworkingBase;
+
+		[FieldOffset(0x003A)] public int nTimestampRandomizeWindow;
+
+		public unsafe float ServerTime => Main.LocalPlayerStruct.TickBase * Interval_Per_Tick;
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
