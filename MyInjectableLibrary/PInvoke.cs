@@ -154,6 +154,26 @@ namespace MyInjectableLibrary
 			WriteCombine = 0x400
 		}
 
+		public enum FreeType
+		{
+			Decommit = 0x4000,
+			Release = 0x8000,
+		}
+
+		[Flags]
+		public enum AllocationTypeFlags
+		{
+			Commit = 0x1000,
+			Reserve = 0x2000,
+			Decommit = 0x4000,
+			Release = 0x8000,
+			Reset = 0x80000,
+			Physical = 0x400000,
+			TopDown = 0x100000,
+			WriteWatch = 0x200000,
+			LargePages = 0x20000000
+		}
+
 		[DllImport("kernel32.dll", SetLastError = true)]
 		public static extern bool VirtualProtect(IntPtr lpAddress, int dwSize,
 			MemoryProtectionFlags flNewProtect, out MemoryProtectionFlags lpflOldProtect);
@@ -161,5 +181,12 @@ namespace MyInjectableLibrary
 		[DllImport("kernel32.dll", SetLastError = true)]
 		[return: MarshalAs(UnmanagedType.Bool)]
 		public static extern bool FreeLibrary(IntPtr hModule);
+
+		[DllImport("kernel32.dll", SetLastError = true)]
+		public static extern IntPtr VirtualAlloc(IntPtr lpAddress, UIntPtr dwSize, AllocationTypeFlags lAllocationType, PInvoke.MemoryProtectionFlags flProtect);
+
+		[DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)]
+		public static extern bool VirtualFree(IntPtr lpAddress,
+			uint dwSize, FreeType dwFreeType);
 	}
 }

@@ -10,6 +10,11 @@ namespace MyInjectableLibrary
 {
 	public class Memory
 	{
+		public static IntPtr AllocateMemory(uint size, PInvoke.MemoryProtectionFlags memoryProtection = PInvoke.MemoryProtectionFlags.ExecuteReadWrite) =>
+			size < 1 ? IntPtr.Zero : PInvoke.VirtualAlloc(IntPtr.Zero, new UIntPtr(size), PInvoke.AllocationTypeFlags.Commit, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
+
+		public static bool FreeMemory(IntPtr baseAddress, uint optionalSize = 0) => baseAddress != IntPtr.Zero && PInvoke.VirtualFree(baseAddress, optionalSize, PInvoke.AllocationTypeFlags.Release);
+
 		public class Reader
 		{
 			#region Unsafe Methods
