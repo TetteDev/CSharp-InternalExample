@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -79,13 +80,94 @@ namespace MyInjectableLibrary
 		public class Writer
 		{
 			#region Unsafe Methods
-			public static unsafe void UnsafeWriteBytes(IntPtr location, byte[] buffer)
+			[Obsolete("Considering getting rid of this")]
+			private static unsafe void UnsafeWriteBytesOldest(IntPtr location, byte[] buffer)
 			{
 				var ptr = (byte*)location;
 				for (int i = 0; i < buffer.Length; i++)
 				{
 					ptr[i] = buffer[i];
 				}
+			}
+
+			public static unsafe void UnsafeWriteBytesNoErrors(IntPtr location, byte[] buffer)
+			{
+				if (location == IntPtr.Zero) return;
+				if (buffer == null || buffer.Length < 1) return;
+
+				var ptr = (void*)location;
+				fixed (void* pBuff = buffer)
+				{
+					Unsafe.CopyBlockUnaligned(ptr, pBuff, (uint)buffer.Length);
+				}
+			}
+
+			public static unsafe bool UnsafeWriteBytes(IntPtr location, byte[] buffer, bool forceVirtualProtect = false)
+			{
+				if (location == IntPtr.Zero || buffer == null || buffer.Length < 1) return false;
+
+				PInvoke.MEMORY_BASIC_INFORMATION lpBuffer = new PInvoke.MEMORY_BASIC_INFORMATION();
+				int virtualQueryResult = -1;
+				if (forceVirtualProtect)
+				{
+					virtualQueryResult = PInvoke.VirtualQuery(location, out lpBuffer, 0x10000);
+					if (virtualQueryResult == 0)
+					{
+						Console.WriteLine($"VirtualQuery returned zero for region 0x{location.ToInt32():X8}");
+						return false;
+					}
+				}
+
+				if (forceVirtualProtect && virtualQueryResult != 0)
+				{
+					// VirtualQuery is successfull
+
+					// Check if region has any write permission
+					if (lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ReadWrite) ||
+						lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.WriteCopy) ||
+						lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.WriteCombine) ||
+						lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ExecuteReadWrite) ||
+						lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ExecuteWriteCopy))
+					{
+						// We can write
+						void* ptr = (void*)location;
+
+						fixed (void* pBuff = buffer)
+						{
+							Unsafe.CopyBlockUnaligned(ptr, pBuff, (uint)buffer.Length);
+						}
+
+						return true;
+					}
+					else
+					{
+						if (lpBuffer.AllocationProtect.HasFlag(PInvoke.AllocationTypeFlags.Commit))
+						{
+							// Page is Committed but doesnt have RWX access
+							// Go ahead and change protection temporarily
+							bool virtualProtectResult = PInvoke.VirtualProtect(location, (int)lpBuffer.RegionSize, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out var oldProtection);
+							if (!virtualProtectResult) return false; // VirtualProtect failed making committed page RWX
+
+							void* ptr = (void*)location;
+							fixed (void* pBuff = buffer)
+							{
+								Unsafe.CopyBlockUnaligned(ptr, pBuff, (uint)buffer.Length);
+							}
+							PInvoke.VirtualProtect(location, 0x10000, oldProtection, out var discard);
+							return true;
+						}
+					}
+				}
+				else
+				{
+					void* ptr = (void*)location;
+					fixed (void* pBuff = buffer)
+					{
+						Unsafe.CopyBlockUnaligned(ptr, pBuff, (uint)buffer.Length);
+					}
+					return true;
+				}
+				return false;
 			}
 
 			public static unsafe void UnsafeWrite<T>(IntPtr address, T value, bool virtualProtectNeeded = true)
@@ -382,6 +464,89 @@ namespace MyInjectableLibrary
 		public class Functions
 		{
 			public static T GetFunction<T>(IntPtr address) => address == IntPtr.Zero ? throw new InvalidOperationException($"Cannot get function Delegate from base address zero") : Marshal.GetDelegateForFunctionPointer<T>(address);
+		}
+
+		public class Hooks
+		{
+			
+
+		}
+
+		public class Detours
+		{
+			public class Detour
+			{
+				private IntPtr _location;
+				private uint _codeCaveSize = 0;
+				private bool _isActive = false;
+
+				private byte[] _originalBytes;
+				private IntPtr _activeDetourCodeCaveLocation = IntPtr.Zero;
+				private uint _writeLocation = 0;
+
+				public Detour(IntPtr location, uint caveSize = 0x10000)
+				{
+					if (location == IntPtr.Zero) throw new InvalidOperationException("");
+					if (caveSize < 1) caveSize = 0x10000;
+					_location = location;
+					_codeCaveSize = caveSize;
+				}
+
+				public bool SetState(bool active = false)
+				{
+					if (!active && !_isActive ||
+					    active && _isActive) return true;
+
+					return active ? Implement() : UnImplement();
+				}
+
+				private bool Implement()
+				{
+					if (_isActive) return true;
+					IntPtr alloc = PInvoke.VirtualAlloc(IntPtr.Zero, new UIntPtr(_codeCaveSize), PInvoke.AllocationTypeFlags.Commit | PInvoke.AllocationTypeFlags.Reserve, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
+					if (alloc == IntPtr.Zero) return false;
+
+					_writeLocation = (uint) alloc;
+
+					List<byte> jmpOut = new List<byte>() { 0xE9 };
+					jmpOut.AddRange(BitConverter.GetBytes(_location.ToInt32() + (alloc.ToInt32() + 6) + 6));
+
+					List<byte> jmpIn = new List<byte>() { 0xE9 };
+					jmpIn.AddRange(BitConverter.GetBytes(alloc.ToInt32() - _location.ToInt32()));
+
+					Writer.UnsafeWriteBytes(alloc, new byte[] {0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00});
+					_writeLocation += 6;
+					Writer.UnsafeWriteBytes(new IntPtr(_writeLocation), jmpOut.ToArray());
+
+					_originalBytes = Reader.UnsafeReadBytes(_location, 6);
+					Writer.UnsafeWriteBytes(_location, jmpIn.ToArray(), true);
+
+					_activeDetourCodeCaveLocation = alloc;
+					_isActive = true;
+					return true;
+				}
+
+				private bool UnImplement()
+				{
+					if (!_isActive) return true;
+					// Unimplement it
+
+					Memory.Writer.UnsafeWriteBytes(_location, _originalBytes, true);
+
+					if (_activeDetourCodeCaveLocation != IntPtr.Zero)
+					{
+						bool freeResult = PInvoke.VirtualFree(_activeDetourCodeCaveLocation, 0, PInvoke.FreeType.Release);
+						_activeDetourCodeCaveLocation = IntPtr.Zero;
+					}
+					_isActive = false;
+					return true;
+				}
+
+				private void WriteToCave(byte[] buffer)
+				{
+
+				}
+			}
 		}
 	}
 }

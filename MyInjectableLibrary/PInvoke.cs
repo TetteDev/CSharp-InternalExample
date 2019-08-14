@@ -154,6 +154,18 @@ namespace MyInjectableLibrary
 			WriteCombine = 0x400
 		}
 
+		[StructLayout(LayoutKind.Sequential)]
+		public struct MEMORY_BASIC_INFORMATION
+		{
+			public IntPtr BaseAddress;
+			public IntPtr AllocationBase;
+			public AllocationTypeFlags AllocationProtect;
+			public IntPtr RegionSize;
+			public uint State;
+			public MemoryProtectionFlags Protect;
+			public uint Type;
+		}
+
 		public enum FreeType
 		{
 			Decommit = 0x4000,
@@ -188,5 +200,8 @@ namespace MyInjectableLibrary
 		[DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)]
 		public static extern bool VirtualFree(IntPtr lpAddress,
 			uint dwSize, FreeType dwFreeType);
+
+		[DllImport("kernel32.dll", SetLastError = true)]
+		public static extern int VirtualQuery(IntPtr lpAddress, out MEMORY_BASIC_INFORMATION lpBuffer, uint dwLength);
 	}
 }

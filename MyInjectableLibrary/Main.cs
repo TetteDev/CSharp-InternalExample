@@ -14,23 +14,22 @@ namespace MyInjectableLibrary
 	    public static void EntryPoint() // Note, member name does not have to match export name ("DllMain" in this case).
 	    {
 			ThisProcess = Process.GetCurrentProcess();
-
-		    if (!DebugConsole.InitiateDebugConsole())
+			AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
+			if (!DebugConsole.InitiateDebugConsole())
 		    {
 			    File.WriteAllText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "hello_from_" + ThisProcess.ProcessName + ".txt"), $"Failed allocating console!");
 				return;
 		    }
 
-		    try
-		    {
-			    // Do something here
-				
-		    }
-		    catch (Exception e)
-		    {
-				Console.WriteLine(e.Message);
-		    }
+			// Do stuff here
+	    }
 
+
+		static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
+		{
+			if (e.ExceptionObject == null) return;
+			HelperMethods.PrintExceptionData(e.ExceptionObject, true);
+			if (Debugger.IsAttached) Debugger.Break();
 		}
     }
 }
