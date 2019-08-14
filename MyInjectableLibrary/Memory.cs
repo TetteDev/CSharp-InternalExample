@@ -1,10 +1,9 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text;
-using static MyInjectableLibrary.Main;
 
 namespace MyInjectableLibrary
 {
@@ -13,23 +12,20 @@ namespace MyInjectableLibrary
 		public static IntPtr AllocateMemory(uint size, PInvoke.MemoryProtectionFlags memoryProtection = PInvoke.MemoryProtectionFlags.ExecuteReadWrite) =>
 			size < 1 ? IntPtr.Zero : PInvoke.VirtualAlloc(IntPtr.Zero, new UIntPtr(size), PInvoke.AllocationTypeFlags.Commit, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
 
-		public static bool FreeMemory(IntPtr baseAddress, uint optionalSize = 0) => baseAddress != IntPtr.Zero && PInvoke.VirtualFree(baseAddress, optionalSize, PInvoke.AllocationTypeFlags.Release);
+		public static bool FreeMemory(IntPtr baseAddress, uint optionalSize = 0) => baseAddress != IntPtr.Zero && PInvoke.VirtualFree(baseAddress, optionalSize, PInvoke.FreeType.Release);
 
 		public class Reader
 		{
 			#region Unsafe Methods
-			public static unsafe byte[] UnsafeReadBytes(IntPtr location, int numBytes)
+			public static unsafe byte[] UnsafeReadBytes(IntPtr location, uint numBytes)
 			{
-				if (ThisProcess.Handle == IntPtr.Zero) throw new InvalidOperationException("Host Process Handle was IntPtr.Zero");
-				if (location == IntPtr.Zero || numBytes < 1) return new byte[] { };
+				byte[] buff = new byte[numBytes];
 
-				var ret = new byte[numBytes];
-				var ptr = (byte*)location;
-				for (int i = 0; i < numBytes; i++)
+				fixed (void* bufferPtr = buff)
 				{
-					ret[i] = ptr[i];
+					Unsafe.CopyBlockUnaligned(bufferPtr, (void*)location, numBytes);
+					return buff;
 				}
-				return ret;
 			}
 
 			public static unsafe T UnsafeRead<T>(IntPtr address, bool isRelative = false)
@@ -37,7 +33,7 @@ namespace MyInjectableLibrary
 				bool requiresMarshal = SizeCache<T>.TypeRequiresMarshal;
 				var size = requiresMarshal ? SizeCache<T>.Size : Unsafe.SizeOf<T>();
 
-				var buffer = UnsafeReadBytes(address, size);
+				var buffer = UnsafeReadBytes(address, (uint)size);
 				fixed (byte* b = buffer)
 				{
 					return requiresMarshal ? Marshal.PtrToStructure<T>(new IntPtr(b)) : Unsafe.Read<T>(b);
@@ -57,7 +53,7 @@ namespace MyInjectableLibrary
 
 			public static string UnsafeReadString(IntPtr address, Encoding encoding, int maxLength = 256)
 			{
-				var data = UnsafeReadBytes(address, maxLength);
+				var data = UnsafeReadBytes(address, (uint)maxLength);
 				var text = new string(encoding.GetChars(data));
 				if (text.Contains("\0"))
 					text = text.Substring(0, text.IndexOf('\0'));
@@ -151,10 +147,10 @@ namespace MyInjectableLibrary
 
 		public class Pattern
 		{
-			public static unsafe IntPtr FindPattern(IntPtr address, int bufferSize, string pattern, bool resultAbsolute = true)
+			public static unsafe IntPtr FindPatternSingle(IntPtr address, int bufferSize, string pattern, bool resultAbsolute = true)
 			{
 				if (bufferSize < 1) return IntPtr.Zero;
-				byte[] buffer = Reader.UnsafeReadBytes(address, bufferSize);
+				byte[] buffer = Reader.UnsafeReadBytes(address, (uint)bufferSize);
 
 				if (buffer == null || buffer.Length < 1) return IntPtr.Zero;
 
@@ -206,10 +202,10 @@ namespace MyInjectableLibrary
 				}
 				return IntPtr.Zero;
 			}
-			public static unsafe IntPtr FindPattern(ProcessModule processModule, string pattern, bool resultAbsolute = true)
+			public static unsafe IntPtr FindPatternSingle(ProcessModule processModule, string pattern, bool resultAbsolute = true)
 			{
 				if (processModule == null) return IntPtr.Zero;
-				byte[] buffer = Reader.UnsafeReadBytes(processModule.BaseAddress, processModule.ModuleMemorySize);
+				byte[] buffer = Reader.UnsafeReadBytes(processModule.BaseAddress, (uint)processModule.ModuleMemorySize);
 				if (buffer == null || buffer.Length < 1) return IntPtr.Zero;
 
 				var tmpSplitPattern = pattern.TrimStart(' ').TrimEnd(' ').Split(' ');
@@ -260,11 +256,132 @@ namespace MyInjectableLibrary
 				}
 				return IntPtr.Zero;
 			}
+
+			public static unsafe List<IntPtr> FindPattern(ProcessModule processModule, string pattern, bool resultAbsolute = true)
+			{
+				if (processModule == null || pattern == string.Empty) return new List<IntPtr>();
+				byte[] buffer = Reader.UnsafeReadBytes(processModule.BaseAddress, (uint)processModule.ModuleMemorySize);
+				if (buffer == null || buffer.Length < 1) return new List<IntPtr>();
+
+				var tmpSplitPattern = pattern.TrimStart(' ').TrimEnd(' ').Split(' ');
+
+				var tmpPattern = new byte[tmpSplitPattern.Length];
+				var tmpMask = new byte[tmpSplitPattern.Length];
+
+				for (var i = 0; i < tmpSplitPattern.Length; i++)
+				{
+					var ba = tmpSplitPattern[i];
+
+					if (ba == "??" || ba.Length == 1 && ba == "?")
+					{
+						tmpMask[i] = 0x00;
+						tmpSplitPattern[i] = "0x00";
+					}
+					else if (char.IsLetterOrDigit(ba[0]) && ba[1] == '?')
+					{
+						tmpMask[i] = 0xF0;
+						tmpSplitPattern[i] = ba[0] + "0";
+					}
+					else if (char.IsLetterOrDigit(ba[1]) && ba[0] == '?')
+					{
+						tmpMask[i] = 0x0F;
+						tmpSplitPattern[i] = "0" + ba[1];
+					}
+					else
+					{
+						tmpMask[i] = 0xFF;
+					}
+				}
+
+				for (var i = 0; i < tmpSplitPattern.Length; i++)
+					tmpPattern[i] = (byte)(Convert.ToByte(tmpSplitPattern[i], 16) & tmpMask[i]);
+
+				if (tmpMask.Length != tmpPattern.Length)
+					throw new ArgumentException($"{nameof(pattern)}.Length != {nameof(tmpMask)}.Length");
+
+
+				List<IntPtr> results = new List<IntPtr>();
+				int result = 0 - tmpPattern.Length;
+				unsafe
+				{
+					fixed (byte* pPacketBuffer = buffer)
+					{
+						do
+						{
+							result = HelperMethods.FindPattern(pPacketBuffer, buffer.Length, tmpPattern, tmpMask, result + tmpPattern.Length);
+							if (result >= 0)
+								results.Add(resultAbsolute ? IntPtr.Add(processModule.BaseAddress, result) : new IntPtr(result));
+						} while (result != -1);
+					}
+				}
+
+				return results;
+			}
+			public static unsafe List<IntPtr> FindPattern(IntPtr address, int bufferSize, string pattern, bool resultAbsolute = true)
+			{
+				if (address == IntPtr.Zero || pattern == string.Empty || bufferSize < 1) return new List<IntPtr>();
+				byte[] buffer = Reader.UnsafeReadBytes(address, (uint)bufferSize);
+				if (buffer == null || buffer.Length < 1) return new List<IntPtr>();
+
+				var tmpSplitPattern = pattern.TrimStart(' ').TrimEnd(' ').Split(' ');
+
+				var tmpPattern = new byte[tmpSplitPattern.Length];
+				var tmpMask = new byte[tmpSplitPattern.Length];
+
+				for (var i = 0; i < tmpSplitPattern.Length; i++)
+				{
+					var ba = tmpSplitPattern[i];
+
+					if (ba == "??" || ba.Length == 1 && ba == "?")
+					{
+						tmpMask[i] = 0x00;
+						tmpSplitPattern[i] = "0x00";
+					}
+					else if (char.IsLetterOrDigit(ba[0]) && ba[1] == '?')
+					{
+						tmpMask[i] = 0xF0;
+						tmpSplitPattern[i] = ba[0] + "0";
+					}
+					else if (char.IsLetterOrDigit(ba[1]) && ba[0] == '?')
+					{
+						tmpMask[i] = 0x0F;
+						tmpSplitPattern[i] = "0" + ba[1];
+					}
+					else
+					{
+						tmpMask[i] = 0xFF;
+					}
+				}
+
+				for (var i = 0; i < tmpSplitPattern.Length; i++)
+					tmpPattern[i] = (byte)(Convert.ToByte(tmpSplitPattern[i], 16) & tmpMask[i]);
+
+				if (tmpMask.Length != tmpPattern.Length)
+					throw new ArgumentException($"{nameof(pattern)}.Length != {nameof(tmpMask)}.Length");
+
+
+				List<IntPtr> results = new List<IntPtr>();
+				int result = 0 - tmpPattern.Length;
+				unsafe
+				{
+					fixed (byte* pPacketBuffer = buffer)
+					{
+						do
+						{
+							result = HelperMethods.FindPattern(pPacketBuffer, buffer.Length, tmpPattern, tmpMask, result + tmpPattern.Length);
+							if (result >= 0)
+								results.Add(resultAbsolute ? IntPtr.Add(address, result) : new IntPtr(result));
+						} while (result != -1);
+					}
+				}
+
+				return results;
+			}
 		}
 
 		public class Functions
 		{
-			
+			public static T GetFunction<T>(IntPtr address) => address == IntPtr.Zero ? throw new InvalidOperationException($"Cannot get function Delegate from base address zero") : Marshal.GetDelegateForFunctionPointer<T>(address);
 		}
 	}
 }

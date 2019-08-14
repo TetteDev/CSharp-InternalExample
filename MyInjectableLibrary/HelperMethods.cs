@@ -50,4 +50,19 @@ namespace MyInjectableLibrary
 			return null;
 		}
 	}
+
+	public static class ProcessModuleExtensions
+	{
+		public static IntPtr FindPatternSingle(this ProcessModule pModObj, string pattern, bool resultAbsolute = true)
+		{
+			if (pModObj == null || pattern == string.Empty) return IntPtr.Zero;
+			return Memory.Pattern.FindPatternSingle(pModObj, pattern, resultAbsolute);
+		}
+
+		public static List<IntPtr> FindPattern(this ProcessModule pModObj, string pattern, bool resultAbsolute = true)
+		{
+			if (pModObj == null || pattern == string.Empty) return new List<IntPtr>();
+			return Memory.Pattern.FindPattern(pModObj, pattern, resultAbsolute);
+		}
+	}
 }
