@@ -1,17 +1,18 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq.Expressions;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+//using Reloaded;
 
 namespace MyInjectableLibrary
 {
 	public class Memory
 	{
 		public static IntPtr AllocateMemory(uint size, PInvoke.MemoryProtectionFlags memoryProtection = PInvoke.MemoryProtectionFlags.ExecuteReadWrite) =>
-			size < 1 ? IntPtr.Zero : PInvoke.VirtualAlloc(IntPtr.Zero, new UIntPtr(size), PInvoke.AllocationTypeFlags.Commit, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
+			size < 1 ? IntPtr.Zero : PInvoke.VirtualAlloc(IntPtr.Zero, new UIntPtr(size), PInvoke.AllocationTypeFlags.Commit | PInvoke.AllocationTypeFlags.Reserve, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
 
 		public static bool FreeMemory(IntPtr baseAddress, uint optionalSize = 0) => baseAddress != IntPtr.Zero && PInvoke.VirtualFree(baseAddress, optionalSize, PInvoke.FreeType.Release);
 
@@ -61,7 +62,7 @@ namespace MyInjectableLibrary
 				return text;
 			}
 
-			public T UnsafeReadMultilevelPointer<T>(IntPtr address, params IntPtr[] offsets) where T : struct
+			public static T UnsafeReadMultilevelPointer<T>(IntPtr address, params int[] offsets) where T : struct
 			{
 				if (offsets.Length == 0)
 					return UnsafeRead<T>(address, false);
@@ -145,16 +146,21 @@ namespace MyInjectableLibrary
 						{
 							// Page is Committed but doesnt have RWX access
 							// Go ahead and change protection temporarily
-							bool virtualProtectResult = PInvoke.VirtualProtect(location, (int)lpBuffer.RegionSize, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out var oldProtection);
-							if (!virtualProtectResult) return false; // VirtualProtect failed making committed page RWX
+							bool virtualProtectResul_RWX = PInvoke.VirtualProtect(location, (int)lpBuffer.RegionSize, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out var oldProtection);
+							if (!virtualProtectResul_RWX)
+							{
+								// Check if we can set page protection to Execute/Write Copy
+								bool virtualProtectResult_EWC = PInvoke.VirtualProtect(location, (int) lpBuffer.RegionSize, PInvoke.MemoryProtectionFlags.ExecuteWriteCopy, out oldProtection);
+								if (!virtualProtectResult_EWC) return false;
+							}
 
 							void* ptr = (void*)location;
 							fixed (void* pBuff = buffer)
 							{
 								Unsafe.CopyBlockUnaligned(ptr, pBuff, (uint)buffer.Length);
 							}
-							PInvoke.VirtualProtect(location, 0x10000, oldProtection, out var discard);
-							return true;
+							return Reader.UnsafeReadBytes(location, (uint)buffer.Length) == buffer &&
+							       PInvoke.VirtualProtect(location, (int)lpBuffer.RegionSize, oldProtection, out var discard);
 						}
 					}
 				}
@@ -464,87 +470,688 @@ namespace MyInjectableLibrary
 		public class Functions
 		{
 			public static T GetFunction<T>(IntPtr address) => address == IntPtr.Zero ? throw new InvalidOperationException($"Cannot get function Delegate from base address zero") : Marshal.GetDelegateForFunctionPointer<T>(address);
+
+			public static uint ExecuteAssembly(List<string> mnemonics, bool recalculateAddressIfNeeded = true)
+			{
+				if (mnemonics == null || mnemonics.Count < 1) return 0;
+				IntPtr alloc = AllocateMemory(0x10000);
+				if (alloc == IntPtr.Zero) return 0;
+
+				if (mnemonics[0].ToLower() != "use32" || mnemonics[0].ToLower() != "use64")
+					mnemonics.Insert(0, "use32");
+
+				if (recalculateAddressIfNeeded)
+					if (mnemonics[0] == "use32" || mnemonics[0] == "64")
+						mnemonics.Insert(1, $"org {alloc}");
+				
+				var asm = Assembler.Assemble(mnemonics);
+				if (asm == null || asm.Length < 1) return 0;
+				
+				Writer.UnsafeWriteBytes(alloc, asm);
+
+				IntPtr t = PInvoke.CreateThread(IntPtr.Zero, 0, alloc, IntPtr.Zero, 0, out IntPtr threadID);
+				if (t == IntPtr.Zero) return 0;
+
+				var result = PInvoke.WaitForSingleObject(t, 0xFFFFFFFF);
+				bool res = PInvoke.GetExitCodeThread(t, out uint resultPtr);
+				if (!res) throw new Exception("failed get exit code");
+
+				PInvoke.VirtualFree(alloc, 0, PInvoke.FreeType.Release);
+				PInvoke.CloseHandle(t);
+				return resultPtr;
+			}
 		}
 
-		public class Hooks
+		public class Assembler
 		{
+			public static byte[] Assemble(List<string> mnemonics, int origin = -1)
+			{
+				Reloaded.Assembler.Assembler asm = null;
+				try
+				{
+					if (mnemonics == null || mnemonics.Count < 1) return null;
+					int originInsertIndex = -1;
+					if (mnemonics[0].ToLower() == "use32" ||
+					    mnemonics[0].ToLower() == "use64")
+					{
+						originInsertIndex = 1;
+					}
+					else
+					{
+						originInsertIndex = 0;
+					}
+
+					if (origin == -1)
+						mnemonics.Insert(originInsertIndex, $"org {origin}");
+
+					asm = new Reloaded.Assembler.Assembler();
+					return asm?.Assemble(mnemonics);
+				}
+				finally
+				{
+					asm?.Dispose();
+				}
+				
+			}
+		}
+
+		private class HooksCustom
+		{
+			public unsafe void* SetHookOrig(void* baseAddress, void* hookAddress, out byte[] originalBytes)
+			{
+				PInvoke.MemoryProtectionFlags oldProtect;
+				byte* newRegion = (byte*) PInvoke.VirtualAlloc(IntPtr.Zero, new UIntPtr(10), PInvoke.AllocationTypeFlags.Commit | PInvoke.AllocationTypeFlags.Reserve, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
+				// if (newregion == 0) we failed
+
+				// set function to be hooked protection to rwx
+				bool virtualProtectFunctionPrologue = PInvoke.VirtualProtect(new IntPtr(baseAddress), 5, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out oldProtect);
+
+				// copy prologue from original function to our allocated region
+				byte[] origBytes = Reader.UnsafeReadBytes(new IntPtr(baseAddress), 5);
+				Writer.UnsafeWriteBytes(new IntPtr(newRegion), origBytes);
+
+				byte* t = (byte*) baseAddress;
+				*t = 0xe9;
+				t++;
+
+				*(int*) t = ((int) hookAddress - (int) (t) - 4);
+				bool virtualProtectFunctionPrologueRestore = PInvoke.VirtualProtect(new IntPtr(baseAddress), 5, oldProtect, out var discard);
+
+				t = newRegion + 5;
+				*t = 0xe9;
+				t++;
+
+				*(int*) t = ((int) baseAddress - (int) t + 1);
+
+				bool newRegionVirtualProtectRX = PInvoke.VirtualProtect(new IntPtr(newRegion), 10, PInvoke.MemoryProtectionFlags.ExecuteRead, out discard);
+
+				originalBytes = origBytes;
+				return (void*) newRegion;
+			}
+
+			public static unsafe T SetHook<T>(void* baseAddress, void* hookAddress, out byte[] originalBytes)
+			{
+				if ((uint) baseAddress == 0x0 || (uint) hookAddress == 0x0) throw new InvalidOperationException($"SetHook<T>(void* {nameof(baseAddress)}, void* {nameof(hookAddress)})" +
+				                                                                                                $"\nParameter {nameof(baseAddress)} = 0x{(uint)baseAddress:X8}\n" +
+				                                                                                                $"Parameter {nameof(hookAddress)} = 0x{(uint)hookAddress:X8}");
+				// alloc new space for the trampoline
+				// 5 bytes for the the copied function prologue, and 5 bytes for the jmp back to the original
+				// byte* newregion = (byte*) VirtualAlloc(0, 10, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+				byte* newRegion = (byte*)PInvoke.VirtualAlloc(IntPtr.Zero, new UIntPtr(10), PInvoke.AllocationTypeFlags.Commit | PInvoke.AllocationTypeFlags.Reserve, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
+				if ((uint) newRegion == 0x0) throw new InvalidOperationException($"Failed allocating memory (parameter {nameof(newRegion)}, size requested: 10 bytes)");
+				
+				// unprotect prologue of our function that should be hooked
+				// VirtualProtect(baseAddr, 5, PAGE_EXECUTE_READWRITE, &oldprotect);
+				bool virtualProtectFunctionPrologue = PInvoke.VirtualProtect(new IntPtr(baseAddress), 5, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out var oldProtect);
+
+				// memcpy( newregion, baseAddr, 5);
+				byte[] origBytes = Reader.UnsafeReadBytes(new IntPtr(baseAddress), 5);
+				if (origBytes.Length == 0 || origBytes == null) throw new InvalidOperationException($"Failed reading orignal bytes");
+				Writer.UnsafeWriteBytes(new IntPtr(newRegion), origBytes);
+
+				byte* t = (byte*)baseAddress;
+				*t = 0xE9; // jmp
+				t++;
+
+				//jmp relative to our function
+				*(uint*)t = (uint)hookAddress - (uint)t - 4;
+
+				// restore prologues protection
+				// VirtualProtect(baseAddr, 5, oldprotect, &oldprotect);
+				if (virtualProtectFunctionPrologue)
+					PInvoke.VirtualProtect(new IntPtr(baseAddress), 5, oldProtect, out var discard_1);
+
+				t = newRegion + 5;
+				*t = 0xE9;
+				t++;
+
+				// jmp relative back to original function
+				*(uint*)t = (uint)baseAddress - (uint)t + 1;
+
+				// we have to set protection to PAGE_EXECUTE_READ
+				// VirtualProtect(newregion, 10, PAGE_EXECUTE_READ, 0);
+				bool newRegionVirtualProtectRX = PInvoke.VirtualProtect(new IntPtr(newRegion), 10, PInvoke.MemoryProtectionFlags.ExecuteRead, out var discard_2);
+
+				originalBytes = origBytes;
+
+				// this is the pointer to function that we will call from the hook
+				return Functions.GetFunction<T>(new IntPtr((void*) newRegion));
+			}
+
 			
 
+			public static unsafe void UnsetHook(void* addr, void* original, byte[] originalBytes)
+			{
+				if (originalBytes == null || originalBytes.Length < 1) throw new InvalidOperationException("Cannot unsethook as originalbytes array was null or empty!");
+				// get functions address
+				PInvoke.MemoryProtectionFlags oldprotect;
+				PInvoke.VirtualProtect(new IntPtr(addr), 5, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out oldprotect);
+
+				Writer.UnsafeWriteBytes(new IntPtr(addr), originalBytes);
+
+				PInvoke.VirtualProtect(new IntPtr(addr), 5, oldprotect, out oldprotect);
+
+				// Also free
+				PInvoke.VirtualFree(new IntPtr(original), 10, PInvoke.FreeType.Release);
+				original = null;
+			}
+		}
+
+		public class Dumper
+		{
+			public static void DumpEntireProcess()
+			{
+
+			}
+
+			public static void DumpProcessModule(ProcessModule targetProcessModule)
+			{
+
+			}
 		}
 
 		public class Detours
 		{
-			public class Detour
+			public static bool RedirectCode(IntPtr target, int instructionLength, List<string> mnemonics, out IntPtr caveAddress, bool keepOverWrittenInstructions = false)
 			{
-				private IntPtr _location;
-				private uint _codeCaveSize = 0;
-				private bool _isActive = false;
-
-				private byte[] _originalBytes;
-				private IntPtr _activeDetourCodeCaveLocation = IntPtr.Zero;
-				private uint _writeLocation = 0;
-
-				public Detour(IntPtr location, uint caveSize = 0x10000)
+				if (target == IntPtr.Zero)
 				{
-					if (location == IntPtr.Zero) throw new InvalidOperationException("");
-					if (caveSize < 1) caveSize = 0x10000;
-					_location = location;
-					_codeCaveSize = caveSize;
+					caveAddress = IntPtr.Zero;
+					Console.WriteLine($"[Detour] Target address was zero");
+					return false;
 				}
 
-				public bool SetState(bool active = false)
+				if (instructionLength < 5) throw new InvalidOperationException($"Instruction length to overwrite must be atleast 5 bytes");
+				byte[] _tmpAsm = Assembler.Assemble(mnemonics, -1);
+				IntPtr codecave = AllocateMemory((uint)_tmpAsm.Length + (uint)instructionLength + 5, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
+				if (codecave == IntPtr.Zero) throw new InvalidOperationException($"Failed allocating code for codecave");
+				Console.WriteLine($"CodeCave Address: 0x{codecave.ToInt32():X8}");
+
+				List<byte> _caveAsm = new List<byte>();
+				List<byte> jumpInAsm = new List<byte>();
+				bool origBytesWriteFailed = false;
+
+				try
 				{
-					if (!active && !_isActive ||
-					    active && _isActive) return true;
-
-					return active ? Implement() : UnImplement();
-				}
-
-				private bool Implement()
-				{
-					if (_isActive) return true;
-					IntPtr alloc = PInvoke.VirtualAlloc(IntPtr.Zero, new UIntPtr(_codeCaveSize), PInvoke.AllocationTypeFlags.Commit | PInvoke.AllocationTypeFlags.Reserve, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
-					if (alloc == IntPtr.Zero) return false;
-
-					_writeLocation = (uint) alloc;
-
-					List<byte> jmpOut = new List<byte>() { 0xE9 };
-					jmpOut.AddRange(BitConverter.GetBytes(_location.ToInt32() + (alloc.ToInt32() + 6) + 6));
-
-					List<byte> jmpIn = new List<byte>() { 0xE9 };
-					jmpIn.AddRange(BitConverter.GetBytes(alloc.ToInt32() - _location.ToInt32()));
-
-					Writer.UnsafeWriteBytes(alloc, new byte[] {0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00});
-					_writeLocation += 6;
-					Writer.UnsafeWriteBytes(new IntPtr(_writeLocation), jmpOut.ToArray());
-
-					_originalBytes = Reader.UnsafeReadBytes(_location, 6);
-					Writer.UnsafeWriteBytes(_location, jmpIn.ToArray(), true);
-
-					_activeDetourCodeCaveLocation = alloc;
-					_isActive = true;
-					return true;
-				}
-
-				private bool UnImplement()
-				{
-					if (!_isActive) return true;
-					// Unimplement it
-
-					Memory.Writer.UnsafeWriteBytes(_location, _originalBytes, true);
-
-					if (_activeDetourCodeCaveLocation != IntPtr.Zero)
+					jumpInAsm = Assembler.Assemble(new List<string>()
 					{
-						bool freeResult = PInvoke.VirtualFree(_activeDetourCodeCaveLocation, 0, PInvoke.FreeType.Release);
-						_activeDetourCodeCaveLocation = IntPtr.Zero;
+						"use32",
+						$"jmp {codecave.ToInt32() - target.ToInt32() - 1}"
+					}).ToList();
+
+					for (int n = 0; n < instructionLength - 5; n++)
+						jumpInAsm.Add(0x90);
+
+					
+					int numBytesBeforeJmpOut = _tmpAsm.Length; /* +  register dump asm byte array length; */
+					if (keepOverWrittenInstructions)
+					{
+						var _oBytes = Reader.UnsafeReadBytes(target, (uint)instructionLength);
+						if (_oBytes == null)
+						{
+							Console.WriteLine($"{nameof(keepOverWrittenInstructions)} was true but failed to read the original overwritten instructions/bytes, moving on ...");
+						}
+						else
+						{
+							numBytesBeforeJmpOut += instructionLength;
+							if (!WriteBytesEx(codecave, _oBytes, false))
+							{
+								FreeMemory(codecave);
+								caveAddress = IntPtr.Zero;
+								Console.WriteLine($"[Detour] Failed writing original overwritten bytes to start of codecave (0x{codecave.ToInt32():X8}), moving on ...");
+								numBytesBeforeJmpOut -= instructionLength;
+								origBytesWriteFailed = true;
+							} else 
+								Console.WriteLine($"Successfully wrote overwritten bytes to the start of the code cave");
+						}
 					}
-					_isActive = false;
+
+					mnemonics.AddRange(new[]
+					{
+						$"jmp {(target + instructionLength) - (codecave.ToInt32() + numBytesBeforeJmpOut) + 1}"
+					});
+					_caveAsm = Assembler.Assemble(mnemonics, codecave.ToInt32()).ToList();
+				}
+				catch (Exception e)
+				{
+					FreeMemory(codecave);
+					caveAddress = IntPtr.Zero;
+					Console.WriteLine($"[Detour] Failed assembling stuff");
+					return false;
+				}
+
+
+				if (!origBytesWriteFailed)
+				{
+					if (!WriteBytesEx(IntPtr.Add(codecave, instructionLength), _caveAsm.ToArray(), false))
+					{
+						FreeMemory(codecave);
+						caveAddress = IntPtr.Zero;
+						Console.WriteLine($"[Detour] Failed writing mnemonics to codecave (0x{codecave.ToInt32():X8})");
+						return false;
+					}
+				}
+				else
+				{
+					if (!WriteBytesEx(codecave, _caveAsm.ToArray(), false))
+					{
+						FreeMemory(codecave);
+						caveAddress = IntPtr.Zero;
+						Console.WriteLine($"[Detour] Failed writing mnemonics to codecave (0x{codecave.ToInt32():X8})");
+						return false;
+					}
+				}
+				
+				var origBytes = Reader.UnsafeReadBytes(target, (uint)instructionLength);
+				if (!WriteBytesEx(target, jumpInAsm.ToArray(), true))
+				{
+					FreeMemory(codecave);
+					caveAddress = IntPtr.Zero;
+					Console.WriteLine($"[Detour] Failed writing jmp to codecave at address 0x{target.ToInt32():X8}");
+					return false;
+				}
+
+				bool confirm = ReadBytesEx(target, 5, out byte[] bytes, true);
+				//if (ReadBytesEx(target, 5) == jumpInAsm.ToArray())
+				if (bytes != null)
+				{
+					caveAddress = codecave;
 					return true;
 				}
 
-				private void WriteToCave(byte[] buffer)
-				{
 
+				if (origBytes != null && origBytes.Length < 0)
+					WriteBytesEx(target, origBytes, true);
+				FreeMemory(codecave);
+				caveAddress = IntPtr.Zero;
+				return false;
+			}
+
+			public static unsafe bool ReadBytesEx(IntPtr address, int count, out byte[] bytes, bool tryVirtualProtectIfNeeded = false)
+			{
+				if (address == IntPtr.Zero || count < 1)
+				{
+					bytes = null;
+					return false;
+				}
+
+				if (!tryVirtualProtectIfNeeded)
+				{
+					var buff = new byte[count];
+
+					fixed (void* bufferPtr = buff)
+					{
+						Unsafe.CopyBlockUnaligned(bufferPtr, (void*) address, (uint) count);
+
+						bytes = buff;
+						return true; // It might have failed here
+					}
+				}
+
+				var withoutVirtualProtectSuccess = ReadBytesEx(address, count, out var success_bytes);
+				if (withoutVirtualProtectSuccess)
+				{
+					Console.WriteLine($"ReadBytesEx on address 0x{address.ToInt32():X8} with tryVirtualProtectIfNeeded bool set to false successfully read {count} bytes!");
+					bytes = success_bytes;
+					return true;
+				}
+
+				var virtualQueryResult = PInvoke.VirtualQuery(address, out var lpBuffer, (uint) Marshal.SizeOf<PInvoke.MEMORY_BASIC_INFORMATION>());
+				if (virtualQueryResult == 0)
+				{
+					Console.WriteLine($"VirtualQuery on address 0x{address.ToInt32():X8} returned zero, trying to read anyways ...");
+					var buff = new byte[count];
+
+					fixed (void* bufferPtr = buff)
+					{
+						Unsafe.CopyBlockUnaligned(bufferPtr, (void*) address, (uint) count);
+
+						bytes = buff;
+						return true;
+					}
+				}
+
+				Console.WriteLine($"Target Address: 0x{address.ToInt32():X8}\n" +
+				                  $"Requested amount of bytes to read: {count}\n\n" +
+				                  "Target Address Information:\n" +
+				                  $"	* Allocation Base: {lpBuffer.AllocationBase.ToInt32():X8}\n" +
+				                  $"	* Base Address: {lpBuffer.BaseAddress.ToInt32():X8}\n" +
+				                  $"	* Region Size: {lpBuffer.RegionSize.ToInt32()} Bytes\n" +
+				                  $"	* Region State: {lpBuffer.State.ToString()}\n" +
+				                  $"	* Region Type: {lpBuffer.Type.ToString()}\n" +
+				                  $"	* Region Protection Flags: {lpBuffer.Protect.ToString()}\n" +
+				                  $"	* Region Allocation Flags: {lpBuffer.AllocationProtect.ToString()}");
+
+				if (lpBuffer.Equals(default(PInvoke.MEMORY_BASIC_INFORMATION)))
+				{
+					Console.WriteLine("Virtual Query returned zero (was successfull) but the MEMORY_BASIC_INFORMATION was null/default!");
+					bytes = null;
+					return false;
+				}
+
+				if ((lpBuffer.State == PInvoke.MemoryState.MEM_COMMIT ||
+				     lpBuffer.State.HasFlag(PInvoke.MemoryState.MEM_COMMIT)) &&
+				    lpBuffer.Protect == PInvoke.MemoryProtectionFlags.ExecuteRead ||
+				    lpBuffer.Protect == PInvoke.MemoryProtectionFlags.ExecuteReadWrite ||
+				    lpBuffer.Protect == PInvoke.MemoryProtectionFlags.ReadWrite ||
+				    lpBuffer.Protect == PInvoke.MemoryProtectionFlags.ReadOnly ||
+
+				    lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ExecuteRead) ||
+				    lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ExecuteReadWrite) ||
+				    lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ReadWrite) ||
+				    lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ReadOnly))
+				{
+					var buff = new byte[count];
+					fixed (void* bufferPtr = buff)
+					{
+						Unsafe.CopyBlockUnaligned(bufferPtr, (void*) address, (uint) count);
+
+						bytes = buff;
+						return true;
+					}
+				}
+
+				// Region state was not MEM_COMMMIT or region protect flags didnt include any read permission whatsoever
+				if (lpBuffer.State != PInvoke.MemoryState.MEM_COMMIT ||
+				    !lpBuffer.State.HasFlag(PInvoke.MemoryState.MEM_COMMIT))
+				{
+					Console.WriteLine("Region State was not MEM_COMMIT, or had flag MEM_COMMIT in it, returning false ...");
+					bytes = null;
+					return false;
+				}
+
+				if (lpBuffer.Protect == PInvoke.MemoryProtectionFlags.NoAccess ||
+				    lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.NoAccess))
+				{
+					Console.WriteLine("Region State was either set to NO_ACCESS or it had the NO_ACCESS flag in it, returning false ...");
+					bytes = null;
+					return false;
+				}
+
+
+				if (lpBuffer.Type != PInvoke.MemoryType.MEM_MAPPED &&
+				    !lpBuffer.Type.HasFlag(PInvoke.MemoryType.MEM_MAPPED))
+				{
+					// If type is not mapped and type does not contain MEM_MAPPED flag
+					Console.WriteLine("Region Type is not MEM_MAPPED nor does the Region Type flags contain the MEM_MAPPED flag, returning false");
+					bytes = null;
+					return false;
+				}
+
+				if (!(lpBuffer.Protect == PInvoke.MemoryProtectionFlags.ExecuteRead ||
+				      lpBuffer.Protect == PInvoke.MemoryProtectionFlags.ExecuteReadWrite ||
+				      lpBuffer.Protect == PInvoke.MemoryProtectionFlags.ReadWrite ||
+				      lpBuffer.Protect == PInvoke.MemoryProtectionFlags.ReadOnly ||
+
+				      lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ExecuteRead) ||
+				      lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ExecuteReadWrite) ||
+				      lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ReadWrite) ||
+				      lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ReadOnly)))
+				{
+					var virtualProtectRegionRWX = PInvoke.VirtualProtect(lpBuffer.AllocationBase, lpBuffer.RegionSize.ToInt32(), PInvoke.MemoryProtectionFlags.ExecuteReadWrite,
+						out var _oldProtectionFlags);
+					if (virtualProtectRegionRWX)
+					{
+						var buff = new byte[count];
+						fixed (void* bufferPtr = buff)
+						{
+							Unsafe.CopyBlockUnaligned(bufferPtr, (void*) address, (uint) count);
+
+							try
+							{
+								bytes = buff;
+								return true;
+							}
+							finally
+							{
+								PInvoke.VirtualProtect(lpBuffer.AllocationBase, lpBuffer.RegionSize.ToInt32(), _oldProtectionFlags, out _);
+							}
+						}
+					}
+
+					// VirtualProtect on region with read/write/execute permissions failed
+					Console.WriteLine("Virtual Protect failed setting code page to EXECUTE/READ/WRITE permissions, returning false");
+					bytes = null;
+					return false;
+				}
+
+				{
+					var buff = new byte[count];
+					fixed (void* bufferPtr = buff)
+					{
+						Unsafe.CopyBlockUnaligned(bufferPtr, (void*) address, (uint) count);
+						bytes = buff;
+						return true;
+					}
+				}
+			}
+			public static unsafe bool WriteBytesEx(IntPtr address, byte[] buffer, bool tryVirtualProtectIfNeeded = false)
+			{
+				if (address == IntPtr.Zero || buffer == null || buffer.Length < 1) return false;
+
+				if (!tryVirtualProtectIfNeeded)
+				{
+					void* ptr = (void*)address;
+					fixed (void* pBuff = buffer)
+					{
+						Unsafe.CopyBlockUnaligned(ptr, pBuff, (uint)buffer.Length);
+					}
+					return true;
+				}
+
+				//var withoutVirtualProtectSuccess = WriteBytesEx(address, buffer, false);
+				//if (withoutVirtualProtectSuccess)
+				//{
+				//	Console.WriteLine($"ReadBytesEx on address 0x{address.ToInt32():X8} with tryVirtualProtectIfNeeded bool set to false successfully wrote {buffer.Length} bytes!");
+				//	return true;
+				//}
+
+				var virtualQueryResult = PInvoke.VirtualQuery(address, out var lpBuffer, (uint)Marshal.SizeOf<PInvoke.MEMORY_BASIC_INFORMATION>());
+				if (virtualQueryResult == 0)
+				{
+					Console.WriteLine($"VirtualQuery on address 0x{address.ToInt32():X8} returned zero, trying to read anyways ...");
+					void* ptr = (void*)address;
+					fixed (void* pBuff = buffer)
+					{
+						Unsafe.CopyBlockUnaligned(ptr, pBuff, (uint)buffer.Length);
+					}
+					return true;
+				}
+				else
+				{
+					Console.WriteLine($"Target Address: 0x{address.ToInt32():X8}\n" +
+					                  $"Requested amount of bytes to write: {buffer.Length}\n\n" +
+					                  "Target Address Information:\n" +
+					                  $"	* Allocation Base: 0x{lpBuffer.AllocationBase.ToInt32():X8}\n" +
+					                  $"	* Base Address: 0x{lpBuffer.BaseAddress.ToInt32():X8}\n" +
+					                  $"	* Region Size: {lpBuffer.RegionSize.ToInt32()} Bytes (Hex: 0x{lpBuffer.RegionSize.ToInt32():X})\n" +
+					                  $"	* Region State: {lpBuffer.State.ToString()}\n" +
+					                  $"	* Region Type: {lpBuffer.Type.ToString()}\n" +
+					                  $"	* Region Protection Flags: {lpBuffer.Protect.ToString()}\n" +
+					                  $"	* Region Allocation Flags: {lpBuffer.AllocationProtect.ToString()}\n");
+
+
+					if ((lpBuffer.Protect == PInvoke.MemoryProtectionFlags.ExecuteReadWrite ||
+					    lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ExecuteReadWrite) ||
+					    
+					    lpBuffer.Protect == PInvoke.MemoryProtectionFlags.ReadWrite ||
+					    lpBuffer.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ReadWrite))
+
+					    &&
+
+					    (lpBuffer.State == PInvoke.MemoryState.MEM_COMMIT ||
+					    lpBuffer.State.HasFlag(PInvoke.MemoryState.MEM_COMMIT))
+
+					    &&
+
+					    lpBuffer.Type == PInvoke.MemoryType.MEM_MAPPED ||
+					    (lpBuffer.Type.HasFlag(PInvoke.MemoryType.MEM_MAPPED)))
+					{
+						Console.WriteLine($"VirtualQuery on address 0x{address.ToInt32():X8} returned zero, trying to read anyways ...");
+						void* ptr = (void*)address;
+						fixed (void* pBuff = buffer)
+						{
+							Unsafe.CopyBlockUnaligned(ptr, pBuff, (uint)buffer.Length);
+						}
+						return true;
+					}
+					else
+					{
+						// State Flags was not MEM_COMMIT or did not have MEM_COMMIT flag in it
+						if (!(lpBuffer.State == PInvoke.MemoryState.MEM_COMMIT ||
+						      lpBuffer.State.HasFlag(PInvoke.MemoryState.MEM_COMMIT)))
+						{
+							Console.WriteLine($"Region was not committed, returning false");
+							return false;
+						}
+
+						// Type Flags was not MEM_MAPPED or did not have MEM_MAPPED flag in it
+						if (!(lpBuffer.Type == PInvoke.MemoryType.MEM_MAPPED ||
+						      lpBuffer.Type.HasFlag(PInvoke.MemoryType.MEM_MAPPED)))
+						{
+							Console.WriteLine($"Region was not mapped, check if Region type flags has MEM_IMAGE flag");
+							if (lpBuffer.Type == PInvoke.MemoryType.MEM_IMAGE ||
+							    lpBuffer.Type.HasFlag(PInvoke.MemoryType.MEM_IMAGE))
+							{
+								Console.WriteLine($"Region type flags had MEM_IMAGE flag, proceeeding to write ...");
+								void* ptr = (void*)address;
+								fixed (void* pBuff = buffer)
+								{
+									Unsafe.CopyBlockUnaligned(ptr, pBuff, (uint)buffer.Length);
+								}
+								return true;
+							}
+
+							Console.WriteLine($"Region Type flags did not have MEM_IMAGE flag");
+							return false;
+						}
+
+						bool regionVirtualProtectSetRWX = PInvoke.VirtualProtect(lpBuffer.AllocationBase, lpBuffer.RegionSize.ToInt32(), PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out var _oldProtection);
+						if (regionVirtualProtectSetRWX)
+						{
+							Console.WriteLine($"Setting region protection to Read/Write/Execute was successfull!");
+							try
+							{
+								void* ptr = (void*) address;
+								fixed (void* pBuff = buffer)
+								{
+									Unsafe.CopyBlockUnaligned(ptr, pBuff, (uint) buffer.Length);
+								}
+
+								return true;
+							}
+							finally
+							{
+								PInvoke.VirtualProtect(lpBuffer.AllocationBase, lpBuffer.RegionSize.ToInt32(), _oldProtection, out _);
+							}
+						}
+						else
+						{
+							Console.WriteLine($"Region State flags had MEM_COMMIT flag: {lpBuffer.State.HasFlag(PInvoke.MemoryState.MEM_COMMIT)}\n" +
+							                  $"Region Type flags had MEM_MAPPED flag: {lpBuffer.Type.HasFlag(PInvoke.MemoryType.MEM_MAPPED)}\n" +
+							                  $"Attempt to set region to RWX: {(regionVirtualProtectSetRWX ? "Success" : "Failed")}\n" +
+							                  $"Attempting to write without changing any protection ...");
+
+							void* ptr = (void*)address;
+							fixed (void* pBuff = buffer)
+							{
+								Unsafe.CopyBlockUnaligned(ptr, pBuff, (uint)buffer.Length);
+							}
+
+							return true;
+						}
+					}
+				}
+			}
+
+			private class Detour
+			{
+				public enum DetourState
+				{
+					Enabled = 1,
+					Disabled = 2,
+					ExceptionEncountered = 3
+				}
+
+				private IntPtr _detourStartLocation;
+				private uint _detourStartLocationBytesOverwrittenCount;
+				private byte[] _detourStartLocationBytesOverwritten;
+
+				private IntPtr _detourCodeCaveLocation;
+				private byte[] _detourCodeCaveAsm;
+				private List<string> _detourCodeCaveAsmMnemonics;
+
+				public DetourState CurrentDetourState
+				{
+					get => CurrentDetourState;
+					private set { }
+				}
+
+				public Detour(IntPtr detourLocation, uint numBytesOverWrite, List<string> codeCaveMnemonics, int codecaveMnemonicsRebaseOrigin = -1)
+				{
+					if (detourLocation == IntPtr.Zero || numBytesOverWrite < 1) throw new InvalidOperationException($"{nameof(detourLocation)} and {nameof(numBytesOverWrite)} cannt be zero!");
+
+					_detourStartLocation = detourLocation;
+					_detourStartLocationBytesOverwrittenCount = numBytesOverWrite;
+					_detourStartLocationBytesOverwritten = Memory.Reader.UnsafeReadBytes(_detourStartLocation, _detourStartLocationBytesOverwrittenCount);
+
+					_detourCodeCaveAsm = codecaveMnemonicsRebaseOrigin != -1 ? Assembler.Assemble(codeCaveMnemonics, codecaveMnemonicsRebaseOrigin) : Assembler.Assemble(codeCaveMnemonics);
+					_detourCodeCaveAsmMnemonics = codeCaveMnemonics;
+				}
+
+				public void SetState(DetourState newState = DetourState.Enabled)
+				{
+					if (CurrentDetourState == newState) return;
+
+					switch (newState)
+					{
+						case DetourState.Enabled:
+							Enable();
+							break;
+						case DetourState.Disabled:
+							Disable();
+							break;
+						default:
+							return;
+					}
+
+					CurrentDetourState = newState;
+				}
+
+				private void Enable()
+				{
+					// 32bit only
+					_detourCodeCaveLocation = Memory.AllocateMemory((uint)_detourCodeCaveAsm.Length + 5 /* plus 5 for jmp out */, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
+					if (_detourStartLocation == IntPtr.Zero) throw new InvalidOperationException($"Failed allocating {_detourCodeCaveAsm.Length + 5} bytes for the codecave");
+
+					uint nopsNeeded = _detourStartLocationBytesOverwrittenCount - 5;
+					List<Byte> jumpInBytes = Memory.Assembler.Assemble(new List<string>()
+					{
+						"use32",
+						$"jmp {_detourCodeCaveLocation}"
+					}, _detourStartLocation.ToInt32()).ToList();
+
+					for (int n = 0; n < nopsNeeded;n++)
+						jumpInBytes.Add(0x90);
+
+
+					Writer.UnsafeWriteBytes(_detourCodeCaveLocation, _detourCodeCaveAsm, true);
+					Writer.UnsafeWriteBytes(_detourCodeCaveLocation + _detourCodeCaveAsm.Length, 
+						Assembler.Assemble(new List<string>()
+						{
+							"use32",
+							$"jmp {_detourStartLocation.ToInt32() + _detourStartLocationBytesOverwrittenCount}"
+						}, _detourCodeCaveLocation.ToInt32() + _detourCodeCaveAsm.Length), true);
+
+					Writer.UnsafeWriteBytes(_detourStartLocation, jumpInBytes.ToArray(), true);
+					CurrentDetourState = DetourState.Enabled;
+				}
+
+				private void Disable()
+				{
+					Writer.UnsafeWriteBytes(_detourStartLocation, _detourStartLocationBytesOverwritten, true);
+					FreeMemory(_detourCodeCaveLocation, 0);
+					CurrentDetourState = DetourState.Disabled;
 				}
 			}
 		}

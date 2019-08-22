@@ -12,6 +12,95 @@ namespace MyInjectableLibrary
 {
 	public class HelperMethods
 	{
+		public static unsafe uint AlainFindPattern(string pattern, int offset = 0, int occurenceIdx = 1, HelperMethods.MemorySearchEntry type = HelperMethods.MemorySearchEntry.RT_ADDRESS, bool checkResult = false, byte[] OpCodeCheck = null)
+		{
+			if (pattern == "") return 0;
+			IntPtr moduleBase = PInvoke.GetModuleHandle("game.bin");
+			if (moduleBase == IntPtr.Zero) return 0;
+			var len = PInvoke.VirtualQuery(moduleBase, out var info, (uint)sizeof(PInvoke.MEMORY_BASIC_INFORMATION));
+			byte* processBase = (byte*)info.BaseAddress;
+			byte* address = processBase;
+
+			UIntPtr size = UIntPtr.Zero;
+			uint count = 0;
+			for (; ; ++count)
+			{
+				len = PInvoke.VirtualQuery(new IntPtr(address), out info, (uint)sizeof(PInvoke.MEMORY_BASIC_INFORMATION));
+				if (info.AllocationBase != (IntPtr)processBase)
+					break;
+				address = (byte*)(info.BaseAddress.ToInt32() + info.RegionSize.ToInt32());
+				size = UIntPtr.Add(size, info.RegionSize.ToInt32());
+			}
+
+			List<IntPtr> results = Memory.Pattern.FindPattern((IntPtr)processBase, (int)size, pattern, true);
+			if (results.Count < 1) return 0;
+
+			IntPtr dwAddy = occurenceIdx > results.Count + 1 ? results.Last() : (occurenceIdx == 0 ? results[0] : results[occurenceIdx - 1]); // Original code occurence was 1 for the first item, 2 for the second item, 3 for the third etc ...
+			dwAddy = IntPtr.Add(dwAddy, offset);
+
+			switch (type)
+			{
+				case MemorySearchEntry.RT_ADDRESS:
+					return *(uint*)dwAddy.ToInt32();
+				case MemorySearchEntry.RT_REL_ADDRESS:
+					if (checkResult)
+						if (!CheckOpcode((byte*)(dwAddy - 1), new byte[] { 0xE8 }))
+							return 0;
+					uint addr = *(uint*)(dwAddy.ToInt32());
+					addr += ((uint)dwAddy.ToInt32() + 4);
+					return addr;
+				case MemorySearchEntry.RT_LOCATION:
+					if (!checkResult) return (uint)dwAddy.ToInt32();
+					if (!CheckOpcode((byte*)(dwAddy - 1), OpCodeCheck ?? new byte[] { 0x55, 0x8B, 0xEC }))
+						return 0;
+					return (uint)dwAddy.ToInt32();
+				default:
+					return 0;
+					/*
+					case MemorySearchEntry.RT_LOCATION:
+					case MemorySearchEntry.RT_REL_ADDRESS:
+						if (!checkResult) return type == MemorySearchEntry.RT_LOCATION
+							? (uint)dwAddy.ToInt32()
+							: *(uint*)dwAddy.ToInt32() + (uint)dwAddy.ToInt32() + 4;
+						if (!CheckOpcode((byte*) (dwAddy - 1), 
+							type == MemorySearchEntry.RT_REL_ADDRESS 
+								? (new byte[] {0xE8}) 
+								: OpCodeCheck ?? new byte[] { 0x55, 0x8B, 0xEC }))
+							return 0;
+						return type == MemorySearchEntry.RT_LOCATION 
+							? (uint) dwAddy.ToInt32() 
+							: *(uint*)dwAddy.ToInt32() + (uint)dwAddy.ToInt32() + 4;
+					case MemorySearchEntry.RT_ADDRESS:
+						return (uint)dwAddy.ToInt32();
+					default:
+						return 0;
+						*/
+			}
+		}
+
+		public static unsafe bool CheckOpcode(byte* pData, byte[] check)
+		{
+			if (check == null)
+			{
+				if (Debugger.IsAttached) Debugger.Break();
+				return false;
+			}
+			if (check[0].ToString("X") == "") return true;
+			foreach (var t in check)
+			{
+				++pData;
+				if (*pData != t)
+					return false;
+			}
+			return true;
+		}
+		public enum MemorySearchEntry
+		{
+			RT_ADDRESS = 0,
+			RT_REL_ADDRESS = 1,
+			RT_LOCATION = 2,
+		}
+
 		public static unsafe int FindPattern(byte* body, int bodyLength, byte[] pattern, byte[] masks, int start = 0)
 		{
 			int foundIndex = -1;
@@ -131,5 +220,10 @@ namespace MyInjectableLibrary
 			if (pModObj == null || pattern == string.Empty) return new List<IntPtr>();
 			return Memory.Pattern.FindPattern(pModObj, pattern, resultAbsolute);
 		}
+	}
+
+	public static unsafe class PointerExtensions {
+
+		
 	}
 }

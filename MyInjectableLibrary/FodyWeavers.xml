@@ -1,0 +1,14 @@
+﻿<Weavers xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="FodyWeavers.xsd">
+  <Costura IncludeDebugSymbols='false'>
+    <Unmanaged32Assemblies>
+      EasyHook32
+      EasyLoad32
+      FASM
+    </Unmanaged32Assemblies>
+    <Unmanaged64Assemblies>
+      EasyHook64
+      EasyLoad64
+      FASMX64
+    </Unmanaged64Assemblies>  
+  </Costura>
+</Weavers>
