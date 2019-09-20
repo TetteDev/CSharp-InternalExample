@@ -1,7 +1,8 @@
 ﻿using System;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Threading;
+using System.Security;
+using System.Text;
 
 namespace MyInjectableLibrary
 {
@@ -45,8 +46,77 @@ namespace MyInjectableLibrary
 		[DllImport("Kernel32.dll", EntryPoint = "RtlMoveMemory", SetLastError = false)]
 		public static extern unsafe void MoveMemory(void* dest, void* src, int size);
 
+		[DllImport("kernel32.dll", SetLastError = true)]
+		public static extern void SetLastError(uint dwErrorCode);
+
+		public struct Vector3
+		{
+			public float x;
+			public float y;
+			public float z;
+
+			public bool IsEmpty => Math.Abs(x) < 0.00001 && Math.Abs(y) < 0.00001 && Math.Abs(z) < 0.00001;
+
+			public void Add(Vector3 vec)
+			{
+				x += vec.x;
+				y += vec.y;
+				z += vec.y;
+			}
+			public void Subtract(Vector3 vec)
+			{
+				x -= vec.x;
+				y -= vec.y;
+				z -= vec.z;
+			}
+			public void Multiply(Vector3 vec)
+			{
+				x *= vec.x;
+				y *= vec.y;
+				y *= vec.z;
+			}
+		}
+
+		public struct Vector
+		{
+			public float x;
+			public float y;
+
+			public bool IsEmpty => Math.Abs(x) < 0.00001 && Math.Abs(y) < 0.00001;
+
+			public void Add(Vector vec)
+			{
+				x += vec.x;
+				y += vec.y;
+			}
+			public void Subtract(Vector vec)
+			{
+				x -= vec.x;
+				y -= vec.y;
+			}
+			public void Multiply(Vector vec)
+			{
+				x *= vec.x;
+				y *= vec.y;
+			}
+		}
+
 		[Flags]
-		public enum MemoryProtectionFlags
+		public enum MemoryState : uint
+		{
+			MEM_COMMIT = 0x1000,
+			MEM_FREE = 0x10000,
+			MEM_RESERVE = 0x2000
+		}
+
+		[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+		public static extern bool SetWindowText(IntPtr hwnd, String lpString);
+
+		[DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+		static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+		[Flags]
+		public enum MemoryProtectionFlags : uint
 		{
 			/// <summary>
 			///     Disables all access to the committed region of pages. An attempt to read from, write to, or execute the committed
@@ -155,6 +225,81 @@ namespace MyInjectableLibrary
 			WriteCombine = 0x400
 		}
 
+		[Flags]
+		public enum MemoryType : uint
+		{
+			MEM_IMAGE = 0x1000000,
+			MEM_MAPPED = 0x40000,
+			MEM_PRIVATE = 0x20000
+		}
+
+		[StructLayout(LayoutKind.Sequential)]
+		public struct MEMORY_BASIC_INFORMATION
+		{
+			public IntPtr BaseAddress;
+			public IntPtr AllocationBase;
+			public AllocationTypeFlags AllocationProtect;
+			public IntPtr RegionSize;
+			public MemoryState State;
+			public MemoryProtectionFlags Protect;
+			public MemoryType Type;
+		}
+
+		public enum FreeType
+		{
+			Decommit = 0x4000,
+			Release = 0x8000,
+		}
+
+		[Flags]
+		public enum AllocationTypeFlags : uint
+		{
+			Commit = 0x1000,
+			Reserve = 0x2000,
+			Decommit = 0x4000,
+			Release = 0x8000,
+			Reset = 0x80000,
+			Physical = 0x400000,
+			TopDown = 0x100000,
+			WriteWatch = 0x200000,
+			LargePages = 0x20000000
+		}
+
+		public enum CERegion
+		{
+			NO = 0,
+			DONT_CARE = 1,
+			YES = 3,
+		}
+
+
+		[DllImport("kernel32.dll", EntryPoint = "RtlZeroMemory")]
+		public static extern unsafe bool ZeroMemory(byte* destination, int length);
+
+		[DllImport("ntdll.dll")]
+		public static extern uint ZwUnmapViewOfSection(long ProcessHandle,
+			long BaseAddress);
+
+		[DllImport("kernel32.dll")]
+		public static extern bool SetThreadContext(long hThread,
+			IntPtr lpContext);
+
+		[DllImport("kernel32.dll")]
+		public static extern bool GetThreadContext(long hThread,
+			IntPtr lpContext);
+
+		[DllImport("kernel32.dll")]
+		public static extern bool CreateProcess(string lpApplicationName,
+			string lpCommandLine,
+			IntPtr lpProcessAttributes,
+			IntPtr lpThreadAttributes,
+			bool bInheritHandles,
+			uint dwCreationFlags,
+			IntPtr lpEnvironment,
+			string lpCurrentDirectory,
+			byte[] lpStartupInfo,
+			byte[] lpProcessInformation);
+
 		[DllImport("kernel32.dll", SetLastError = true)]
 		public static extern bool VirtualProtect(IntPtr lpAddress, int dwSize,
 			MemoryProtectionFlags flNewProtect, out MemoryProtectionFlags lpflOldProtect);
@@ -163,13 +308,42 @@ namespace MyInjectableLibrary
 		[return: MarshalAs(UnmanagedType.Bool)]
 		public static extern bool FreeLibrary(IntPtr hModule);
 
+		[DllImport("kernel32.dll", SetLastError = true)]
+		public static extern IntPtr VirtualAlloc(IntPtr lpAddress, UIntPtr dwSize, AllocationTypeFlags lAllocationType, MemoryProtectionFlags flProtect);
+
+		[DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)]
+		public static extern bool VirtualFree(IntPtr lpAddress,
+			uint dwSize, FreeType dwFreeType);
+
+		[DllImport("kernel32.dll", SetLastError = true)]
+		public static extern int VirtualQuery(IntPtr lpAddress, out MEMORY_BASIC_INFORMATION lpBuffer, uint dwLength);
+
+		[DllImport("kernel32", CharSet = CharSet.Ansi, ExactSpelling = true, SetLastError = true)]
+		public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
+
+		[DllImport("kernel32.dll", CharSet = CharSet.Auto)]
+		public static extern IntPtr GetModuleHandle(string lpModuleName);
+
 		[DllImport("kernel32.dll")]
-		public static extern IntPtr CreateRemoteThread(IntPtr hProcess,
-			IntPtr lpThreadAttributes, uint dwStackSize, IntPtr lpStartAddress,
-			IntPtr lpParameter, uint dwCreationFlags, out IntPtr lpThreadId);
+		public static extern IntPtr OpenMutex(uint dwDesiredAccess, bool bInheritHandle,
+			string lpName);
+
+		[DllImport("kernel32.dll", SetLastError = true)]
+		public static extern bool ReleaseMutex(IntPtr hMutex);
+
+		[DllImport("kernel32.dll", SetLastError = true)]
+		[SuppressUnmanagedCodeSecurity]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool CloseHandle(IntPtr hObject);
+
+		[DllImport("kernel32.dll", SetLastError= true)]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool DuplicateHandle(IntPtr hSourceProcessHandle,
+			IntPtr hSourceHandle, IntPtr hTargetProcessHandle, out IntPtr lpTargetHandle,
+			uint dwDesiredAccess, [MarshalAs(UnmanagedType.Bool)] bool bInheritHandle, uint dwOptions);
 
 		[DllImport("Kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-		public static extern unsafe uint CreateThread(
+		public static extern IntPtr CreateThread(
 			IntPtr lpThreadAttributes,
 			uint dwStackSize,
 			IntPtr lpStartAddress,
@@ -177,10 +351,36 @@ namespace MyInjectableLibrary
 			uint dwCreationFlags,
 			out IntPtr lpThreadId);
 
-		[DllImport("kernel32.dll", SetLastError = true)]
-		internal static extern IntPtr GetProcAddress(IntPtr moduleHandle, string procName);
+		[DllImport("kernel32.dll")]
+		public static extern IntPtr CreateRemoteThread(IntPtr hProcess, IntPtr lpThreadAttributes, uint dwStackSize, IntPtr lpStartAddress, IntPtr lpParameter, ThreadCreationFlags dwCreationFlags, out IntPtr lpThreadId);
 
-		[DllImport("kernel32.dll", CharSet = CharSet.Auto)]
-		public static extern IntPtr GetModuleHandle(string lpModuleName);
+		[DllImport("kernel32.dll", SetLastError = true)]
+		public static extern WaitForSingleOBjectResult WaitForSingleObject(IntPtr hHandle, UInt32 dwMilliseconds);
+
+		[DllImport("kernel32.dll")]
+		public static extern bool GetExitCodeThread(IntPtr hThread, out uint lpExitCode);
+
+		[DllImport("kernel32.dll", SetLastError = true)]
+		public static extern int ResumeThread(IntPtr hThread);
+
+		[DllImport("kernel32.dll")]
+		public static extern int SuspendThread(IntPtr hThread);
+
+		[DllImport("kernel32.dll")]
+		public static extern int TerminateThread(IntPtr hThread, uint dwExitCode);
+
+		public enum ThreadCreationFlags : uint
+		{
+			CREATE_RUN_DIRECTLY = 0x0,
+			CREATE_SUSPENDED = 0x00000004,
+			STACK_SIZE_PARAM_IS_A_RESERVATION = 0x00010000
+		}
+
+		public enum WaitForSingleOBjectResult : uint
+		{
+			WAIT_ABANDONED = 0x00000080,
+			WAIT_OBJECT_O = 0x0,
+			WAIT_TIMEOUT = 0x00000102
+		}
 	}
 }
