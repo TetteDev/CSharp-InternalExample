@@ -1,6 +1,8 @@
 ﻿using System;
+using System.CodeDom;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -8,7 +10,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
-using System.Windows.Forms.VisualStyles;
 
 //using Reloaded;
 
@@ -18,10 +19,19 @@ namespace MyInjectableLibrary
 	{
 		public static IntPtr AllocateMemory(uint size, PInvoke.MemoryProtectionFlags memoryProtection = PInvoke.MemoryProtectionFlags.ExecuteReadWrite) =>
 			size < 1 ? IntPtr.Zero : PInvoke.VirtualAlloc(IntPtr.Zero, new UIntPtr(size), PInvoke.AllocationTypeFlags.Commit | PInvoke.AllocationTypeFlags.Reserve, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
-
-		public static bool FreeMemory(IntPtr baseAddress, uint optionalSize = 0) 
+		public static bool FreeMemory(IntPtr baseAddress, uint optionalSize = 0)
 			=> baseAddress != IntPtr.Zero && PInvoke.VirtualFree(baseAddress, optionalSize, PInvoke.FreeType.Release);
 
+		public static IntPtr AllocateMemoryManaged(int size)
+			=> size < 1 ? IntPtr.Zero : Marshal.AllocHGlobal(size);
+		public static void FreeMemoryManaged(IntPtr address)
+		{
+			if (address == IntPtr.Zero)
+				return;
+			Marshal.FreeHGlobal(address);
+		}
+
+		
 		public class Reader
 		{
 			#region Unsafe Methods
@@ -476,7 +486,7 @@ namespace MyInjectableLibrary
 			{
 				if (pattern == "") return IntPtr.Zero;
 				if (writableMemory == PInvoke.CERegion.NO && executableMemory == PInvoke.CERegion.NO) return IntPtr.Zero;
-				if (startRange == stopRange) return IntPtr.Zero;
+				if (startRange == stopRange || stopRange > startRange) return IntPtr.Zero;
 
 
 				List<PInvoke.MEMORY_BASIC_INFORMATION> regionsToScan = new List<PInvoke.MEMORY_BASIC_INFORMATION>();
@@ -487,6 +497,9 @@ namespace MyInjectableLibrary
 					{
 						if (mbi.State == PInvoke.MemoryState.MEM_COMMIT && !(mbi.Protect.HasFlag(PInvoke.MemoryProtectionFlags.Guard)))
 						{
+							if (Reader.UnsafeReadBytes(new IntPtr(address),1).Length != 1)
+								continue;
+
 							if (executableMemory == PInvoke.CERegion.NO && (mbi.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ExecuteReadWrite) ||
 							                                                mbi.Protect.HasFlag(PInvoke.MemoryProtectionFlags.Execute) ||
 							                                                mbi.Protect.HasFlag(PInvoke.MemoryProtectionFlags.ExecuteRead) ||
@@ -583,53 +596,71 @@ namespace MyInjectableLibrary
 
 			public static uint ExecuteAssembly(List<string> mnemonics, bool recalculateAddressIfNeeded = true)
 			{
-				if (mnemonics == null || mnemonics.Count < 1) return 0;
-				IntPtr alloc = AllocateMemory(0x10000);
-				if (alloc == IntPtr.Zero) throw new Exception("failed allocating codecave");
+				IntPtr alloc = IntPtr.Zero;
+				try
+				{
+					if (mnemonics == null || mnemonics.Count < 1) return 0;
+					alloc = AllocateMemory(0x10000);
+					if (alloc == IntPtr.Zero) throw new Exception("failed allocating codecave");
 
-				if (mnemonics[0].ToLower() != "use32" || mnemonics[0].ToLower() != "use64")
-					mnemonics.Insert(0, "use32"); // Assume we´re assemling x86 mnemonics
+					if (mnemonics[0].ToLower() != "use32" || mnemonics[0].ToLower() != "use64")
+						mnemonics.Insert(0, "use32"); // Assume we´re assemling x86 mnemonics
 
-				if (recalculateAddressIfNeeded)
-					if (mnemonics[0] == "use32" || mnemonics[0] == "64")
-						mnemonics.Insert(1, $"org {alloc}");
-				
-				var asm = Assembler.Assemble(mnemonics);
-				if (asm == null || asm.Length < 1) return 0;
-				
-				Writer.UnsafeWriteBytes(alloc, asm);
+					if (recalculateAddressIfNeeded)
+						if (mnemonics[0] == "use32" || mnemonics[0] == "64")
+							mnemonics.Insert(1, $"org {alloc}");
 
-				IntPtr t = PInvoke.CreateThread(IntPtr.Zero, 0, alloc, IntPtr.Zero, 0, out IntPtr threadID);
-				if (t == IntPtr.Zero) return 0;
+					var asm = Assembler.Assemble(mnemonics);
+					if (asm == null || asm.Length < 1) return 0;
 
-				var result = PInvoke.WaitForSingleObject(t, 0xFFFFFFFF);
-				bool res = PInvoke.GetExitCodeThread(t, out uint resultPtr);
-				if (!res) throw new Exception("failed get exit code");
+					Writer.UnsafeWriteBytes(alloc, asm);
 
-				PInvoke.VirtualFree(alloc, 0, PInvoke.FreeType.Release);
-				PInvoke.CloseHandle(t);
-				return resultPtr;
+					IntPtr t = PInvoke.CreateThread(IntPtr.Zero, 0, alloc, IntPtr.Zero, 0, out IntPtr threadID);
+					if (t == IntPtr.Zero) return 0;
+
+					var result = PInvoke.WaitForSingleObject(t, 0xFFFFFFFF);
+					bool res = PInvoke.GetExitCodeThread(t, out uint resultPtr);
+					if (!res) throw new Exception("failed get exit code");
+
+					PInvoke.VirtualFree(alloc, 0, PInvoke.FreeType.Release);
+					PInvoke.CloseHandle(t);
+					return resultPtr;
+				}
+				catch
+				{
+					if (alloc != IntPtr.Zero)
+						FreeMemory(alloc);
+					return 0;
+				}
 			}
 			public static uint ExecuteAssembly(byte[] asm)
 			{
 				if (asm == null || asm.Length < 1) return uint.MinValue;
 				IntPtr alloc = IntPtr.Zero;
-				alloc = AllocateMemory(asm.Length < 0x1000 ? (uint) 0x1000 : (uint) 0x10000);
+				try
+				{
+					alloc = AllocateMemory(asm.Length < 0x1000 ? (uint) 0x1000 : (uint) 0x10000);
+					if (alloc == IntPtr.Zero) throw new Exception("failed allocating codecave");
 
-				if (alloc == IntPtr.Zero) throw new Exception("failed allocating codecave");
+					Writer.UnsafeWriteBytes(alloc, asm);
 
-				Writer.UnsafeWriteBytes(alloc, asm);
+					IntPtr t = PInvoke.CreateThread(IntPtr.Zero, 0, alloc, IntPtr.Zero, 0, out IntPtr threadID);
+					if (t == IntPtr.Zero) return 0;
 
-				IntPtr t = PInvoke.CreateThread(IntPtr.Zero, 0, alloc, IntPtr.Zero, 0, out IntPtr threadID);
-				if (t == IntPtr.Zero) return 0;
+					var result = PInvoke.WaitForSingleObject(t, 0xFFFFFFFF); // Wait forever?
+					bool res = PInvoke.GetExitCodeThread(t, out uint resultPtr);
+					if (!res) throw new Exception("failed get exit code");
 
-				var result = PInvoke.WaitForSingleObject(t, 0xFFFFFFFF);
-				bool res = PInvoke.GetExitCodeThread(t, out uint resultPtr);
-				if (!res) throw new Exception("failed get exit code");
-
-				PInvoke.VirtualFree(alloc, 0, PInvoke.FreeType.Release);
-				PInvoke.CloseHandle(t);
-				return resultPtr;
+					PInvoke.VirtualFree(alloc, 0, PInvoke.FreeType.Release);
+					PInvoke.CloseHandle(t);
+					return resultPtr;
+				}
+				catch
+				{
+					if (alloc != IntPtr.Zero)
+						FreeMemory(alloc);
+					return 0;
+				}
 			}
 		}
 
@@ -652,7 +683,7 @@ namespace MyInjectableLibrary
 						originInsertIndex = 0;
 					}
 
-					if (origin == -1)
+					if (origin > -1)
 						mnemonics.Insert(originInsertIndex, $"org {origin}");
 
 					asm = new Reloaded.Assembler.Assembler();
@@ -664,293 +695,71 @@ namespace MyInjectableLibrary
 				}
 				
 			}
+			public static byte[] Assemble(string[] mnemonics, int origin = -1)
+			{
+				Reloaded.Assembler.Assembler asm = null;
+				try
+				{
+					if (mnemonics == null || mnemonics.Length < 1) return null;
+					int originInsertIndex = -1;
+					if (mnemonics[0].ToLower() == "use32" ||
+					    mnemonics[0].ToLower() == "use64")
+					{
+						originInsertIndex = 1;
+					}
+					else
+					{
+						originInsertIndex = 0;
+					}
+
+					if (origin > -1)
+					{
+						Array.Resize(ref mnemonics, mnemonics.Length + 1);
+						
+					}
+
+					List<string> tmp = mnemonics.ToList();
+					tmp.Insert(originInsertIndex, $"org {origin}");
+					mnemonics = tmp.ToArray();
+
+					asm = new Reloaded.Assembler.Assembler();
+					return asm?.Assemble(mnemonics);
+				}
+				finally
+				{
+					asm?.Dispose();
+				}
+
+			}
 		}
 
 		public class Injector
 		{
-			public class X64RunPE
-			{
-				public  static unsafe void InjectAndRun(byte[] payloadBuffer, string pathHost, string optionalArgs = "")
-				{
-					if (payloadBuffer == null || payloadBuffer.Length < 1) return;
-					if (!File.Exists(pathHost)) return;
-
-					int e_lfanew = 0;
-					int sizeOfImage = 0;
-					int sizeOfHeaders = 0;
-					int entryPoint = 0;
-
-					short numberOfSections = 0;
-					short sizeOfOptionalHeader = 0;
-					long imageBase = 0;
-
-					fixed (byte* pBuffer = payloadBuffer)
-					{
-						e_lfanew = *(int*) (pBuffer + 0x3c);
-						sizeOfImage = *(int*)(pBuffer + e_lfanew + 0x8 + 0x038);
-						sizeOfHeaders = *(int*)(pBuffer + e_lfanew + 0x8 + 0x03c);
-						entryPoint = *(int*)(pBuffer + e_lfanew + 0x8 + 0x10);
-
-						numberOfSections = *(short*) (pBuffer + e_lfanew + 0x4 + 0x2);
-						sizeOfOptionalHeader = *(short*)(pBuffer + e_lfanew + 0x4 + 0x10);
-						imageBase = *(short*)(pBuffer + e_lfanew + 0x18 + 0x18);
-					}
-
-					byte[] bStartupInfo = new byte[0x68];
-					byte[] bProcessInfo = new byte[0x18];
-
-					IntPtr pThreadContext = Allocate(0x4d0, 16);
-
-					string target_host = pathHost;
-					if (!string.IsNullOrEmpty(optionalArgs))
-						target_host += " " + optionalArgs;
-					string currentDirectory = Directory.GetCurrentDirectory();
-
-					*(int*) (pThreadContext.ToInt32() + 0x30) = 0x0010001b;
-
-					PInvoke.CreateProcess(null, target_host, IntPtr.Zero, IntPtr.Zero, true, 0x4u, IntPtr.Zero, currentDirectory, bStartupInfo, bProcessInfo);
-
-					long processHandle = 0;
-					long threadHandle = 0;
-
-					fixed (byte* pBuff = bProcessInfo)
-					{
-						processHandle = *(long*) (pBuff + 0x0);
-						threadHandle = *(long*)(pBuff + 0x8);
-					}
-
-					PInvoke.ZwUnmapViewOfSection(processHandle, imageBase);
-					PInvoke.VirtualAlloc(new IntPtr(imageBase), new UIntPtr((uint)sizeOfImage), (PInvoke.AllocationTypeFlags)0x3000, (PInvoke.MemoryProtectionFlags)0x40);
-
-					Memory.Writer.UnsafeWriteBytes(new IntPtr(imageBase), payloadBuffer, false);
-
-					for (short i = 0; i < numberOfSections; i++)
-					{
-						byte[] section = new byte[0x28];
-						Buffer.BlockCopy(payloadBuffer, e_lfanew + (0x18 + sizeOfOptionalHeader) + (0x28 * i), section, 0, 0x28);
-
-						fixed (byte* pBuff = section)
-						{
-							int virtualAddress = *(int*) (pBuff + 0xC);
-							int sizeOfRawData = *(int*) (pBuff + 0x10);
-							int pointerToRawData = *(int*)(pBuff + 0x14);
-
-							byte[] bRawData = new byte[sizeOfRawData];
-							Buffer.BlockCopy(payloadBuffer, pointerToRawData, bRawData, 0, bRawData.Length);
-
-							Memory.Writer.UnsafeWriteBytes(new IntPtr(imageBase + virtualAddress), bRawData, false);
-						}
-					}
-
-					PInvoke.GetThreadContext(threadHandle, pThreadContext);
-
-					byte[] bImageBase = BitConverter.GetBytes(imageBase);
-
-					long rdx = *(long*) (pThreadContext + 0x88);
-					Memory.Writer.UnsafeWriteBytes(new IntPtr(rdx + 16), bImageBase, false);
-
-					*(long*) (pThreadContext.ToInt32() + 0x80) = imageBase + entryPoint; 
-
-					PInvoke.SetThreadContext(threadHandle, pThreadContext);
-					PInvoke.ResumeThread(new IntPtr(threadHandle));
-
-					Marshal.FreeHGlobal(pThreadContext);
-					PInvoke.CloseHandle(new IntPtr(processHandle));
-					PInvoke.CloseHandle(new IntPtr(threadHandle));
-				}
-
-				public static unsafe void InjectAndRunOriginal(byte[] payloadBuffer, string host, string args)
-				{
-					if (payloadBuffer == null || payloadBuffer.Length < 1) return;
-
-					int e_lfanew = Marshal.ReadInt32(payloadBuffer, 0x3c);
-					int sizeOfImage = Marshal.ReadInt32(payloadBuffer, e_lfanew + 0x18 + 0x038);
-					int sizeOfHeaders = Marshal.ReadInt32(payloadBuffer, e_lfanew + 0x18 + 0x03c);
-					int entryPoint = Marshal.ReadInt32(payloadBuffer, e_lfanew + 0x18 + 0x10);
-
-					short numberOfSections = Marshal.ReadInt16(payloadBuffer, e_lfanew + 0x4 + 0x2);
-					short sizeOfOptionalHeader = Marshal.ReadInt16(payloadBuffer, e_lfanew + 0x4 + 0x10);
-					long imageBase = Marshal.ReadInt64(payloadBuffer, e_lfanew + 0x18 + 0x18);
-
-
-					byte[] bStartupInfo = new byte[0x68];
-					byte[] bProcessInfo = new byte[0x18];
-
-					IntPtr pThreadContext = Allocate(0x4d0, 16);
-
-					string target_host = host;
-					if (!string.IsNullOrEmpty(args))
-						target_host += " " + args;
-					string currentDirectory = Directory.GetCurrentDirectory();
-
-					Marshal.WriteInt32(pThreadContext, 0x30, 0x0010001b);
-
-					PInvoke.CreateProcess(null, target_host, IntPtr.Zero, IntPtr.Zero, true, 0x4u, IntPtr.Zero, currentDirectory, bStartupInfo, bProcessInfo);
-					long processHandle = Marshal.ReadInt64(bProcessInfo, 0x0);
-					long threadHandle = Marshal.ReadInt64(bProcessInfo, 0x8);
-
-					PInvoke.ZwUnmapViewOfSection(processHandle, imageBase);
-					PInvoke.VirtualAlloc(new IntPtr(imageBase), new UIntPtr((uint)sizeOfImage), (PInvoke.AllocationTypeFlags)0x3000, (PInvoke.MemoryProtectionFlags)0x40);
-
-					Memory.Writer.UnsafeWriteBytes(new IntPtr(imageBase), payloadBuffer, false);
-
-					for (short i = 0; i < numberOfSections; i++)
-					{
-						byte[] section = new byte[0x28];
-						Buffer.BlockCopy(payloadBuffer, e_lfanew + (0x18 + sizeOfOptionalHeader) + (0x28 * i), section, 0, 0x28);
-
-						int virtualAddress = Marshal.ReadInt32(section, 0x00c);
-						int sizeOfRawData = Marshal.ReadInt32(section, 0x010);
-						int pointerToRawData = Marshal.ReadInt32(section, 0x014);
-
-						byte[] bRawData = new byte[sizeOfRawData];
-						Buffer.BlockCopy(payloadBuffer, pointerToRawData, bRawData, 0, bRawData.Length);
-
-						Memory.Writer.UnsafeWriteBytes(new IntPtr(imageBase + virtualAddress), bRawData, false);
-					}
-
-					PInvoke.GetThreadContext(threadHandle, pThreadContext);
-
-					byte[] bImageBase = BitConverter.GetBytes(imageBase);
-
-					long rdx = Marshal.ReadInt64(pThreadContext, 0x88);
-					Memory.Writer.UnsafeWriteBytes(new IntPtr(rdx + 16), bImageBase, false);
-
-					Marshal.WriteInt64(pThreadContext, 0x80 /* rcx */, imageBase + entryPoint);
-
-					PInvoke.SetThreadContext(threadHandle, pThreadContext);
-					PInvoke.ResumeThread(new IntPtr(threadHandle));
-
-					Marshal.FreeHGlobal(pThreadContext);
-					PInvoke.CloseHandle(new IntPtr(processHandle));
-					PInvoke.CloseHandle(new IntPtr(threadHandle));
-				}
-				private static IntPtr Allocate(int size, int alignment)
-				{
-					IntPtr allocated = Marshal.AllocHGlobal(size + (alignment / 2));
-					return Align(allocated, alignment);
-				}
-				private static IntPtr Align(IntPtr source, int alignment)
-				{
-					long source64 = source.ToInt64() + (alignment - 1);
-					long aligned = alignment * (source64 / alignment);
-					return new IntPtr(aligned);
-				}
-			}
-		}
-
-		private class HooksCustom
-		{
-			public unsafe void* SetHookOrig(void* baseAddress, void* hookAddress, out byte[] originalBytes)
-			{
-				PInvoke.MemoryProtectionFlags oldProtect;
-				byte* newRegion = (byte*) PInvoke.VirtualAlloc(IntPtr.Zero, new UIntPtr(10), PInvoke.AllocationTypeFlags.Commit | PInvoke.AllocationTypeFlags.Reserve, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
-				// if (newregion == 0) we failed
-
-				// set function to be hooked protection to rwx
-				bool virtualProtectFunctionPrologue = PInvoke.VirtualProtect(new IntPtr(baseAddress), 5, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out oldProtect);
-
-				// copy prologue from original function to our allocated region
-				byte[] origBytes = Reader.UnsafeReadBytes(new IntPtr(baseAddress), 5);
-				Writer.UnsafeWriteBytes(new IntPtr(newRegion), origBytes);
-
-				byte* t = (byte*) baseAddress;
-				*t = 0xe9;
-				t++;
-
-				*(int*) t = ((int) hookAddress - (int) (t) - 4);
-				bool virtualProtectFunctionPrologueRestore = PInvoke.VirtualProtect(new IntPtr(baseAddress), 5, oldProtect, out var discard);
-
-				t = newRegion + 5;
-				*t = 0xe9;
-				t++;
-
-				*(int*) t = ((int) baseAddress - (int) t + 1);
-
-				bool newRegionVirtualProtectRX = PInvoke.VirtualProtect(new IntPtr(newRegion), 10, PInvoke.MemoryProtectionFlags.ExecuteRead, out discard);
-
-				originalBytes = origBytes;
-				return (void*) newRegion;
-			}
-
-			public static unsafe T SetHook<T>(void* baseAddress, void* hookAddress, out byte[] originalBytes)
-			{
-				if ((uint) baseAddress == 0x0 || (uint) hookAddress == 0x0) throw new InvalidOperationException($"SetHook<T>(void* {nameof(baseAddress)}, void* {nameof(hookAddress)})" +
-				                                                                                                $"\nParameter {nameof(baseAddress)} = 0x{(uint)baseAddress:X8}\n" +
-				                                                                                                $"Parameter {nameof(hookAddress)} = 0x{(uint)hookAddress:X8}");
-				// alloc new space for the trampoline
-				// 5 bytes for the the copied function prologue, and 5 bytes for the jmp back to the original
-				// byte* newregion = (byte*) VirtualAlloc(0, 10, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-				byte* newRegion = (byte*)PInvoke.VirtualAlloc(IntPtr.Zero, new UIntPtr(10), PInvoke.AllocationTypeFlags.Commit | PInvoke.AllocationTypeFlags.Reserve, PInvoke.MemoryProtectionFlags.ExecuteReadWrite);
-				if ((uint) newRegion == 0x0) throw new InvalidOperationException($"Failed allocating memory (parameter {nameof(newRegion)}, size requested: 10 bytes)");
-				
-				// unprotect prologue of our function that should be hooked
-				// VirtualProtect(baseAddr, 5, PAGE_EXECUTE_READWRITE, &oldprotect);
-				bool virtualProtectFunctionPrologue = PInvoke.VirtualProtect(new IntPtr(baseAddress), 5, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out var oldProtect);
-
-				// memcpy( newregion, baseAddr, 5);
-				byte[] origBytes = Reader.UnsafeReadBytes(new IntPtr(baseAddress), 5);
-				if (origBytes.Length == 0 || origBytes == null) throw new InvalidOperationException($"Failed reading orignal bytes");
-				Writer.UnsafeWriteBytes(new IntPtr(newRegion), origBytes);
-
-				byte* t = (byte*)baseAddress;
-				*t = 0xE9; // jmp
-				t++;
-
-				//jmp relative to our function
-				*(uint*)t = (uint)hookAddress - (uint)t - 4;
-
-				// restore prologues protection
-				// VirtualProtect(baseAddr, 5, oldprotect, &oldprotect);
-				if (virtualProtectFunctionPrologue)
-					PInvoke.VirtualProtect(new IntPtr(baseAddress), 5, oldProtect, out var discard_1);
-
-				t = newRegion + 5;
-				*t = 0xE9;
-				t++;
-
-				// jmp relative back to original function
-				*(uint*)t = (uint)baseAddress - (uint)t + 1;
-
-				// we have to set protection to PAGE_EXECUTE_READ
-				// VirtualProtect(newregion, 10, PAGE_EXECUTE_READ, 0);
-				bool newRegionVirtualProtectRX = PInvoke.VirtualProtect(new IntPtr(newRegion), 10, PInvoke.MemoryProtectionFlags.ExecuteRead, out var discard_2);
-
-				originalBytes = origBytes;
-
-				// this is the pointer to function that we will call from the hook
-				return Functions.GetFunction<T>(new IntPtr((void*) newRegion));
-			}
-
 			
-
-			public static unsafe void UnsetHook(void* addr, void* original, byte[] originalBytes)
-			{
-				if (originalBytes == null || originalBytes.Length < 1) throw new InvalidOperationException("Cannot unsethook as originalbytes array was null or empty!");
-				// get functions address
-				PInvoke.MemoryProtectionFlags oldprotect;
-				PInvoke.VirtualProtect(new IntPtr(addr), 5, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out oldprotect);
-
-				Writer.UnsafeWriteBytes(new IntPtr(addr), originalBytes);
-
-				PInvoke.VirtualProtect(new IntPtr(addr), 5, oldprotect, out oldprotect);
-
-				// Also free
-				PInvoke.VirtualFree(new IntPtr(original), 10, PInvoke.FreeType.Release);
-				original = null;
-			}
 		}
 
 		public class Dumper
 		{
 			public static void DumpEntireProcess()
 			{
-
+				Console.WriteLine("DumpEntireProcess() has not been implemented yet");
 			}
 
-			public static void DumpProcessModule(ProcessModule targetProcessModule)
+			public static bool DumpProcessModule(ProcessModule targetProcessModule, string saveDirectory = "default")
 			{
+				byte[] buff = Memory.Reader.UnsafeReadBytes(targetProcessModule.BaseAddress, (uint)targetProcessModule.ModuleMemorySize);
+				if (buff == null || buff.Length < 1) return false;
 
+				if (saveDirectory != "default")
+				{
+					File.WriteAllBytes(Path.Combine(saveDirectory, $"{targetProcessModule.FileName}_dumped.bin"), buff);
+					return true;
+				}
+				else
+				{
+					File.WriteAllBytes(Path.Combine(Environment.CurrentDirectory, $"{targetProcessModule.FileName}_dumped.bin"), buff);
+					return true;
+				}
 			}
 		}
 
@@ -987,7 +796,7 @@ namespace MyInjectableLibrary
 						jumpInAsm.Add(0x90);
 
 					
-					int numBytesBeforeJmpOut = _tmpAsm.Length; /* +  register dump asm byte array length; */
+					int numBytesBeforeJmpOut = _tmpAsm.Length; /* +  _register dump asm byte array length; */
 					if (keepOverWrittenInstructions)
 					{
 						var _oBytes = Reader.UnsafeReadBytes(target, (uint)instructionLength);
@@ -1368,6 +1177,277 @@ namespace MyInjectableLibrary
 				}
 			}
 
+			public static bool RegisterOnExecutedCallback(IntPtr instructionLocation, int instructionLength, Structs.CallbackDelegate callbackFunction, byte[] onExecutedAssembly,
+				bool keepOverwrittenBytes = true, bool placeCustomShellcodeFirst = false)
+			{
+				if (instructionLength < 5)
+					return false;
+
+				IntPtr _callbackAddr = Marshal.GetFunctionPointerForDelegate(callbackFunction);
+				if (_callbackAddr == IntPtr.Zero)
+				{
+					Console.WriteLine($"Address of delegate was zero!");
+					return false;
+				}
+
+				var _cave = AllocateMemory(0x10000);
+				if (_cave == IntPtr.Zero)
+				{
+					Console.WriteLine($"Failed allocating memory for code cave");
+					return false;
+				}
+				
+				int nops = instructionLength - 5;
+				List<byte> jmpIn = Assembler.Assemble(new List<string>()
+				{
+					"use32",
+					$"jmp 0x{_cave.ToInt32():X8}"
+				}, instructionLocation.ToInt32()).ToList();
+
+				for (int n = 0; n < nops; n++)
+					jmpIn.Add(0x90);
+
+				Console.WriteLine($"C# Function Address: 0x{_callbackAddr.ToInt32():X8}");
+				Console.WriteLine($"Code Cave: 0x{_cave.ToInt32():X8}");
+
+				// TODO: Check protection of address before changing it
+
+				bool protecc = Protection.SetPageProtection(instructionLocation, instructionLength, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out var old);
+				if (!protecc)
+				{
+					Console.WriteLine($"Failed changing page protection!");
+					return false;
+				}
+
+				int offset = 0;
+
+				byte[] oBytes = Reader.UnsafeReadBytes(instructionLocation, (uint)instructionLength);
+				
+				if (keepOverwrittenBytes)
+				{
+					if (placeCustomShellcodeFirst)
+					{
+						bool onExecutedAssemblyBytes = Writer.UnsafeWriteBytes(_cave + offset, onExecutedAssembly);
+						offset += onExecutedAssemblyBytes ? onExecutedAssembly.Length : 0;
+
+						bool oBytesWrite = Writer.UnsafeWriteBytes(_cave + offset, oBytes);
+
+						if (!oBytesWrite)
+						{
+							FreeMemory(_cave);
+							Protection.SetPageProtection(instructionLocation, instructionLength, old, out _);
+							Console.WriteLine($"Failed writing original bytes to code cave!");
+							return false;
+						}
+					}
+					else
+					{
+						bool oBytesWrite = Writer.UnsafeWriteBytes(_cave, oBytes);
+						offset += oBytesWrite ? instructionLength : 0;
+
+						if (!oBytesWrite)
+						{
+							FreeMemory(_cave);
+							Protection.SetPageProtection(instructionLocation, instructionLength, old, out _);
+							Console.WriteLine($"Failed writing original bytes to code cave!");
+							return false;
+						}
+
+						if (onExecutedAssembly != null && onExecutedAssembly.Length > 0)
+						{
+							bool onExecutedAssemblyBytes = Writer.UnsafeWriteBytes(_cave + offset, onExecutedAssembly);
+							offset += onExecutedAssemblyBytes ? onExecutedAssembly.Length : 0;
+						}
+					}
+				}
+				else
+				{
+					if (onExecutedAssembly != null && onExecutedAssembly.Length > 0)
+					{
+						bool onExecutedAssemblyBytes = Writer.UnsafeWriteBytes(_cave + offset, onExecutedAssembly);
+						offset += onExecutedAssemblyBytes ? onExecutedAssembly.Length : 0;
+					}
+				}
+
+				IntPtr _register = AllocateMemory((uint)Marshal.SizeOf(typeof(Structs.Registers)), PInvoke.MemoryProtectionFlags.ReadWrite);
+				if (_register == IntPtr.Zero)
+				{
+					FreeMemory(_cave);
+					Protection.SetPageProtection(instructionLocation, instructionLength, old, out _);
+					return false;
+				}
+
+				List<byte> callDelegate = new List<byte>();
+				try
+				{
+					callDelegate = Assembler.Assemble(new List<string>()
+					{
+						"use32",
+
+						$"mov [0x{_register.ToInt32():X8}], eax",
+						$"mov [0x{_register.ToInt32() + 4:X8}], ebx",
+						$"mov [0x{_register.ToInt32() + 8:X8}], ecx",
+						$"mov [0x{_register.ToInt32() + 12:X8}], edx",
+						$"mov [0x{_register.ToInt32() + 16:X8}], esi",
+						$"mov [0x{_register.ToInt32() + 20:X8}], edi",
+						$"mov [0x{_register.ToInt32() + 24:X8}], ebp",
+						$"mov dword [0x{_register.ToInt32() + 28:X8}], 0x{_cave.ToInt32():X8}",
+
+						// Address to our cave
+						$"push 0x{_register.ToInt32():X8}",  // pushes address of our _register struct to the stack
+						$"call 0x{_callbackAddr.ToInt32():X8}", // call our c# method (callbackFunction parameter) from unmanaged code
+						"pop ebx", // Should put address of our _register pointer into ebx, stack is now back to normal?
+
+
+						$"jmp 0x{(instructionLocation.ToInt32() + instructionLength):X8}"
+					}, _cave.ToInt32() + offset).ToList();
+				}
+				catch
+				{
+					FreeMemory(_cave);
+					FreeMemory(_register);
+					Protection.SetPageProtection(instructionLocation, instructionLength, old, out _);
+					Console.WriteLine($"Failed assembling cave body code!");
+					return false;
+				}
+
+				bool result = Writer.UnsafeWriteBytes(_cave + offset, callDelegate.ToArray()) && Writer.UnsafeWriteBytes(instructionLocation, jmpIn.ToArray());
+				if (!result)
+				{
+					bool jumpInSuccessful = Reader.UnsafeReadBytes(instructionLocation, (uint)jmpIn.Count) == jmpIn.ToArray();
+					bool jumpOutSucessfull = Reader.UnsafeReadBytes(_cave, (uint) callDelegate.Count) == callDelegate.ToArray();
+
+					if (!jumpOutSucessfull)
+					{
+						Protection.SetPageProtection(instructionLocation, instructionLength, old, out _);
+						FreeMemory(_cave);
+						FreeMemory(_register);
+						Console.WriteLine($"Failed writing jump out bytes!");
+						return false;
+					}
+
+					if (!jumpInSuccessful)
+					{
+						Protection.SetPageProtection(instructionLocation, instructionLength, old, out _);
+						FreeMemory(_cave);
+						FreeMemory(_register);
+						Console.WriteLine($"Failed writing jump in bytes!");
+						return false;
+					}
+				}
+
+				bool protecc_restore = Protection.SetPageProtection(instructionLocation, instructionLength, old, out _);
+				if (!protecc_restore)
+				{
+					Console.WriteLine($"Failed restoring page protection!");
+				}
+
+				if (result)
+					Protection.SetPageProtection(_cave, 0x1000, PInvoke.MemoryProtectionFlags.ExecuteRead, out _);
+				return result;
+			}
+
+			public static unsafe IntPtr HookSet(IntPtr funcAddress, IntPtr hkAddress, int optPrologueLengthFixup = 5)
+			{
+				// Returns address to original unhooked function
+				// Return value is also used in function UnsetHook
+
+				IntPtr oFunctionAddress = AllocateMemory(10 + (uint)(optPrologueLengthFixup - 5));
+				if (oFunctionAddress == IntPtr.Zero)
+					return IntPtr.Zero;
+
+				Threads.SuspendProcess();
+				Protection.SetPageProtection(funcAddress, optPrologueLengthFixup, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out var initProtect);
+
+				Writer.UnsafeWriteBytes(oFunctionAddress, Reader.UnsafeReadBytes(funcAddress, (uint)optPrologueLengthFixup));
+
+				byte* t = (byte*) funcAddress;
+				*t = 0xe9;
+				t++;
+				*(uint*)t = ((uint)hkAddress - (uint)t - 4);
+
+				byte* nopLocation = (byte*) (funcAddress + 5);
+				for (int n = 0; n < optPrologueLengthFixup - 5; n++)
+				{
+					*nopLocation = 0x90;
+					nopLocation++;
+				}
+				
+				Protection.SetPageProtection(funcAddress, optPrologueLengthFixup, initProtect, out _);
+				t = (byte*)oFunctionAddress + optPrologueLengthFixup;
+				*t = 0xe9;
+				t++;
+
+				*(uint*)t = ((uint)funcAddress - (uint)t + 1 + (uint)(optPrologueLengthFixup - 5));
+				Protection.SetPageProtection(oFunctionAddress, 10 + (optPrologueLengthFixup - 5), PInvoke.MemoryProtectionFlags.ExecuteRead, out _);
+				Threads.ResumeProcess();
+
+				return oFunctionAddress;
+			}
+			public static unsafe void UnsetHook(IntPtr funcAddress, IntPtr HookSetReturnValue, int optPrologueLengthFixup = 5)
+			{
+				Protection.SetPageProtection(funcAddress, optPrologueLengthFixup, PInvoke.MemoryProtectionFlags.ExecuteReadWrite, out var old);
+				Writer.UnsafeWriteBytes(funcAddress,
+					Reader.UnsafeReadBytes(HookSetReturnValue, (uint) optPrologueLengthFixup));
+				Protection.SetPageProtection(funcAddress, optPrologueLengthFixup, old, out _);
+				FreeMemory(HookSetReturnValue, 10 + (uint)optPrologueLengthFixup - 5);
+			}
+
+			private static IntPtr Test(IntPtr funcAddress, IntPtr hkAddress, int optPrologueLengthFixup = 5)
+			{
+				Protection.SetPageProtection(funcAddress, optPrologueLengthFixup,
+					PInvoke.MemoryProtectionFlags.ExecuteReadWrite,
+					out var old);
+
+				if (optPrologueLengthFixup > 5)
+				{
+					// Room for additional prologue bytes + jmp real Hook
+					IntPtr _middleCave = AllocateMemory((uint) (optPrologueLengthFixup - 3) + 5);
+
+					byte[] overflowingBytes = Reader.UnsafeReadBytes(funcAddress + 3, (uint)optPrologueLengthFixup - 3);
+					Writer.UnsafeWriteBytes(_middleCave, overflowingBytes);
+
+					byte[] jmpToRealHook = Assembler.Assemble(new List<string>
+						{
+							"use32",
+							$"jmp 0x{hkAddress.ToInt32():X8}"
+						}, _middleCave.ToInt32() + overflowingBytes.Length);
+
+					Writer.UnsafeWriteBytes(_middleCave + overflowingBytes.Length, jmpToRealHook);
+
+					// Room for original prologue + jmp to (original function + optPrologueLengthFixup)
+					IntPtr _newRegion = AllocateMemory((uint) optPrologueLengthFixup + 5);
+
+					Writer.UnsafeWriteBytes(_newRegion,
+						Reader.UnsafeReadBytes(funcAddress, (uint)optPrologueLengthFixup));
+
+					byte[] jmpToOriginal = Assembler.Assemble(new List<string>()
+						{
+							"use32",
+							$"jmp 0x{(funcAddress.ToInt32() + optPrologueLengthFixup):X8}"
+						}, _newRegion.ToInt32() + optPrologueLengthFixup);
+
+					Writer.UnsafeWriteBytes(_newRegion + optPrologueLengthFixup, jmpToOriginal);
+
+					int nopsNeeded = optPrologueLengthFixup - 5;
+					List<byte> jmpToMiddleCave = Assembler.Assemble(new List<string>()
+					{
+						"use32",
+						$"jmp 0x{_middleCave.ToInt32():X8}"
+					}, funcAddress.ToInt32()).ToList();
+
+					for (int n = 0; n < nopsNeeded;n++)
+						jmpToMiddleCave.Add(0x90);
+
+					// write jmp
+					Writer.UnsafeWriteBytes(funcAddress, jmpToMiddleCave.ToArray());
+
+					return _newRegion;
+				}
+
+				return optPrologueLengthFixup < 5 ? IntPtr.Zero : HookSet(funcAddress, hkAddress, 5);
+			}
+
 			private class Detour
 			{
 				public enum DetourState
@@ -1456,6 +1536,91 @@ namespace MyInjectableLibrary
 					Writer.UnsafeWriteBytes(_detourStartLocation, _detourStartLocationBytesOverwritten, true);
 					FreeMemory(_detourCodeCaveLocation, 0);
 					CurrentDetourState = DetourState.Disabled;
+				}
+			}
+		}
+
+		public class Protection
+		{
+			public static bool SetPageProtection(IntPtr baseAddress, int size, PInvoke.MemoryProtectionFlags newProtection, out PInvoke.MemoryProtectionFlags oldProtection)
+			{
+				bool res = PInvoke.VirtualProtect(baseAddress, size, newProtection, out var oldProtect);
+				oldProtection = oldProtect;
+				return res;
+			}
+
+			public static PInvoke.MEMORY_BASIC_INFORMATION GetPageProtection(IntPtr baseAddress)
+			{
+				int res = PInvoke.VirtualQuery(baseAddress, out PInvoke.MEMORY_BASIC_INFORMATION buff, (uint)Marshal.SizeOf<PInvoke.MEMORY_BASIC_INFORMATION>());
+				return buff;
+			}
+		}
+
+		public class Threads
+		{
+			public static void SuspendProcess(string moduleExclude = "MyInjectableLibrary.dll")
+			{
+				var process = Process.GetCurrentProcess(); // throws exception if process does not exist
+				ProcessModule ourModule = process.FindProcessModule(moduleExclude);
+				IntPtr start = IntPtr.Zero;
+				IntPtr end = IntPtr.Zero;
+				
+				if (ourModule != null)
+				{
+					start = ourModule.BaseAddress;
+					end = ourModule.BaseAddress + ourModule.ModuleMemorySize;
+				}
+
+
+				foreach (ProcessThread pT in process.Threads)
+				{
+					if (start == IntPtr.Zero || end == IntPtr.Zero)
+					{
+						IntPtr pOpenThread = PInvoke.OpenThread(PInvoke.ThreadAccess.SUSPEND_RESUME, false, (uint)pT.Id);
+						if (pOpenThread == IntPtr.Zero)
+							continue;
+
+						PInvoke.SuspendThread(pOpenThread);
+						PInvoke.CloseHandle(pOpenThread);
+					}
+					else
+					{
+						if (pT.StartAddress.ToInt32() < start.ToInt32() || pT.StartAddress.ToInt32() > end.ToInt32())
+						{
+							IntPtr pOpenThread = PInvoke.OpenThread(PInvoke.ThreadAccess.SUSPEND_RESUME, false, (uint)pT.Id);
+							if (pOpenThread == IntPtr.Zero)
+								continue;
+
+							PInvoke.SuspendThread(pOpenThread);
+							PInvoke.CloseHandle(pOpenThread);
+						}
+					}
+				}
+			}
+
+			public static void ResumeProcess()
+			{
+				var process = Process.GetCurrentProcess();
+
+				if (process.ProcessName == string.Empty)
+					return;
+
+				foreach (ProcessThread pT in process.Threads)
+				{
+					IntPtr pOpenThread = PInvoke.OpenThread(PInvoke.ThreadAccess.SUSPEND_RESUME, false, (uint)pT.Id);
+
+					if (pOpenThread == IntPtr.Zero)
+					{
+						continue;
+					}
+
+					var suspendCount = 0;
+					do
+					{
+						suspendCount = PInvoke.ResumeThread(pOpenThread);
+					} while (suspendCount > 0);
+
+					PInvoke.CloseHandle(pOpenThread);
 				}
 			}
 		}

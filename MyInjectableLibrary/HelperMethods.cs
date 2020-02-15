@@ -5,9 +5,12 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Microsoft.CSharp;
+using MyInjectableLibrary;
 
 namespace MyInjectableLibrary
 {
@@ -199,6 +202,11 @@ namespace MyInjectableLibrary
 
 		}
 
+		public static bool IsKeyPushedDown(System.Windows.Forms.Keys vKey)
+		{
+			return 0 != (PInvoke.GetAsyncKeyState(vKey) & 0x8000);
+		}
+
 		public static void WriteToFile(string contents)
 		{
 			if (contents.Length < 1) return;
@@ -236,31 +244,7 @@ namespace MyInjectableLibrary
 				switch (currentPattern.Identifier)
 				{
 					case "StopFishing":
-						currentPattern.Scan(ref Main.StopFishing);
-						break;
-					case "CatchProcess":
-						currentPattern.Scan(ref Main.CatchProcess);
-						break;
-					case "OpenUIFunction":
-						currentPattern.Scan(ref Main.OpenUIFunction);
-						break;
-					case "WndInterfaceBase":
-						currentPattern.Scan(ref Main.WndInterfaceBase);
-						break;
-					case "GetLocalPlayer":
-						currentPattern.Scan(ref Main.GetLocalPlayer);
-						break;
-					case "CurrentMapBase":
-						currentPattern.Scan(ref Main.CurrentMapBase);
-						break;
-					case "DetourMainLoopOffset":
-						currentPattern.Scan(ref Main.DetourMainLoopOffset);
-						break;
-					case "InventoryAccessFunction":
-						currentPattern.Scan(ref Main.InventoryAccessFunction);
-						break;
-					case "TargetingCollectionsBase":
-						currentPattern.Scan(ref Main.TargetingCollectionsBase);
+						//currentPattern.Scan(ref Main.StopFishing);
 						break;
 					default:
 						Console.WriteLine($"Encountered a pattern entry with no destination variable, it is only retrievable via GetAddressFromIdentifier(string) now ...");
@@ -290,31 +274,7 @@ namespace MyInjectableLibrary
 				switch (currentPattern.Identifier)
 				{
 					case "StopFishing":
-						currentPattern.Scan(ref Main.StopFishing);
-						break;
-					case "CatchProcess":
-						currentPattern.Scan(ref Main.CatchProcess);
-						break;
-					case "OpenUIFunction":
-						currentPattern.Scan(ref Main.OpenUIFunction);
-						break;
-					case "WndInterfaceBase":
-						currentPattern.Scan(ref Main.WndInterfaceBase);
-						break;
-					case "GetLocalPlayer":
-						currentPattern.Scan(ref Main.GetLocalPlayer);
-						break;
-					case "CurrentMapBase":
-						currentPattern.Scan(ref Main.CurrentMapBase);
-						break;
-					case "DetourMainLoopOffset":
-						currentPattern.Scan(ref Main.DetourMainLoopOffset);
-						break;
-					case "InventoryAccessFunction":
-						currentPattern.Scan(ref Main.InventoryAccessFunction);
-						break;
-					case "TargetingCollectionsBase":
-						currentPattern.Scan(ref Main.TargetingCollectionsBase);
+						//currentPattern.Scan(ref Main.StopFishing);
 						break;
 					default:
 						Console.WriteLine($"Encountered a pattern entry with no destination variable, it is only retrievable via GetAddressFromIdentifier(string) now ...");
@@ -343,6 +303,188 @@ namespace MyInjectableLibrary
 
 	public static unsafe class PointerExtensions {
 
+	}
+
+	public static unsafe class NetvarManager
+	{
+		private static int SearchInSubTableInternal(IntPtr subTable, string searchFor)
+		{
+			IntPtr subtablePointer = *(IntPtr*) (subTable + 0x28);
+			IntPtr current = *(IntPtr*) subtablePointer;
+
+			while (true)
+			{
+				string entryName = Memory.Reader.UnsafeReadString(*(IntPtr*) current, Encoding.UTF8, 256);
+				if (entryName == "" || entryName.Length < 1) break;
+				if (entryName.Length > 3 && entryName.Equals(searchFor))
+					return *(int*)(current + 0x2c);
+
+				int subSubTable = *(int*) (current + 0x28);
+				if (subSubTable > 0)
+				{
+					int a = SearchInSubTableInternal(current, searchFor);
+					if (a > 0) return a;
+				}
+
+				current += 0x3C;
+			}
+			return 0;
+		}
+
+		private static int SearchInSubtable(IntPtr subTable, string searchFor)
+		{
+			IntPtr current = subTable;
+			while (true)
+			{
+				string entryName = Memory.Reader.UnsafeReadString(*(IntPtr*)(current), Encoding.UTF8);
+
+				if (entryName == "")
+					break;
+
+				if (entryName.Length < 1)
+					break;
+
+				switch (entryName)
+				{
+					case "baseclass":
+					{
+						int a = SearchInBaseClassInternal(current, searchFor);
+						if (a > 0)
+							return a;
+						break;
+					}
+
+					case "cslocaldata":
+					{
+						int a = SearchInCSLocalDataInternal(current, searchFor);
+						if (a > 0)
+							return a;
+						break;
+					}
+
+					case "localdata":
+					{
+						int a = SearchInLocalDataInternal(current, searchFor);
+						if (a > 0)
+							return a;
+						break;
+					}
+				}
+
+				int subSubTable = *(int*) (current + 0x28);
+
+				if (subSubTable > 0)
+				{
+					int a = SearchInSubTableInternal(current, searchFor);
+					if (a > 0)
+						return a;
+				}
+
+				int offset = *(int*) (current + 0x2C);
+				if (entryName == searchFor)
+					return offset;
+
+				current += 0x3C;
+			}
+
+			return 0;
+		}
+
+
+		private static int SearchInBaseClassInternal(IntPtr baseClass, string searchFor)
+		{
+			int a = SearchInSubtable(baseClass + 0x3C, searchFor);
+			if (a > 0) return a;
+
+			IntPtr baseClassPtr = *(IntPtr*) (baseClass);
+			string className = Memory.Reader.UnsafeReadString(baseClassPtr, Encoding.UTF8);
+			return className.Equals("baseclass") ? SearchInBaseClassInternal(*(IntPtr*) (*(IntPtr*) (baseClass + 0x28)), searchFor) : 0;
+		}
+
+		private static int SearchInCSLocalDataInternal(IntPtr csLocalData, string searchFor)
+		{
+			int a = SearchInSubtable(csLocalData + 0x28, searchFor);
+			if (a > 0) return a;
+
+			IntPtr csLocalDataPtr = *(IntPtr*) (csLocalData);
+			IntPtr baseClassPtr = *(IntPtr*) (csLocalData + 0x28);
+			string className = Memory.Reader.UnsafeReadString(csLocalDataPtr, Encoding.UTF8);
+			return className == "cslocaldata" ? SearchInBaseClassInternal(*(IntPtr*) (baseClassPtr), searchFor) : 0;
+		}
+
+		private static int SearchInLocalDataInternal(IntPtr localData, string searchFor)
+		{
+			int a = SearchInSubtable(localData + 0x28, searchFor);
+
+			if (a > 0)
+				return a;
+
+			IntPtr localDataPtr = *(IntPtr*) (localData);
+			IntPtr localDataBaseClassPtr = *(IntPtr*) (localData + 0x28);
+			string className = Memory.Reader.UnsafeReadString(localDataPtr, Encoding.UTF8);
+			return className == "localdata" ? SearchInBaseClassInternal(*(IntPtr*) (localDataBaseClassPtr), searchFor) : 0;
+		}
+
 		
+		private static int SearchInTableForInternal(IntPtr table, string searchFor)
+		{
+			IntPtr current = *(IntPtr*) *(IntPtr*) (table + 0xC);
+			while (true)
+			{
+				if ((*(int*)(current)) < 1)
+					break;
+
+				string entryName = Memory.Reader.UnsafeReadString(*(IntPtr*) (current), Encoding.UTF8);
+
+				if (entryName.Length < 1)
+					break;
+
+				switch (entryName)
+				{
+					case "baseclass":
+						return SearchInBaseClassInternal(current, searchFor);
+					case "cslocaldata":
+						return SearchInCSLocalDataInternal(current, searchFor);
+					case "localdata":
+						return SearchInLocalDataInternal(current, searchFor);
+				}
+
+				int offset = *(int*) (current + 0x2C);
+				if (entryName.Equals(searchFor))
+					return offset;
+				current += 0x3C;
+
+			}
+
+			return 0;
+		}
+		private static IntPtr GetTable(string wantedTable)
+		{
+			// https://github.com/vmcall/ControlCSGO/blob/master/Forms/CheatForm.cs#L235
+			//IntPtr current = Offsets.ClientClassesHead;
+			IntPtr current = IntPtr.Zero;
+
+			while (true)
+			{
+				string className = Memory.Reader.UnsafeReadString(*(IntPtr*) (current + 0x8), Encoding.UTF8);
+				string tableName = Memory.Reader.UnsafeReadString(Memory.Reader.UnsafeRead<IntPtr>(Memory.Reader.UnsafeRead<IntPtr>(current + 0xC) + 0xC), Encoding.UTF8);
+
+				if (className.Equals(wantedTable) || tableName.Equals(wantedTable))
+					return current;
+
+				current = *(IntPtr*) (current + 0x10);
+				if ((int)current < 1)
+					break;
+			}
+
+			return IntPtr.Zero;
+		}
+
+		public static int GetOffset(string table, string entry, int addition = 0)
+		{
+			IntPtr tableAddress = GetTable(table);
+			int offset = SearchInTableForInternal(tableAddress, entry);
+			return offset + addition;
+		}
 	}
 }

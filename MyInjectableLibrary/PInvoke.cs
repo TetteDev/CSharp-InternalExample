@@ -12,6 +12,9 @@ namespace MyInjectableLibrary
 		[DllImport("kernel32.dll")]
 		public static extern bool AllocConsole();
 
+		[DllImport("user32.dll")]
+		public static extern short GetAsyncKeyState(System.Windows.Forms.Keys vKey);
+
 		[DllImport("kernel32.dll", SetLastError = true)]
 		public static extern IntPtr CreateFile(string lpFileName
 			, [MarshalAs(UnmanagedType.U4)] DesiredAccess dwDesiredAccess
@@ -23,6 +26,22 @@ namespace MyInjectableLibrary
 
 		[DllImport("kernel32.dll", SetLastError = true)]
 		public static extern bool SetStdHandle(StdHandle nStdHandle, IntPtr hHandle);
+
+		public enum ThreadAccess : int
+		{
+			TERMINATE = (0x0001),
+			SUSPEND_RESUME = (0x0002),
+			GET_CONTEXT = (0x0008),
+			SET_CONTEXT = (0x0010),
+			SET_INFORMATION = (0x0020),
+			QUERY_INFORMATION = (0x0040),
+			SET_THREAD_TOKEN = (0x0080),
+			IMPERSONATE = (0x0100),
+			DIRECT_IMPERSONATION = (0x0200)
+		}
+
+		[DllImport("kernel32.dll")]
+		public static extern IntPtr OpenThread(ThreadAccess dwDesiredAccess, bool bInheritHandle, uint dwThreadId);
 
 		public enum StdHandle : int
 		{
@@ -49,33 +68,6 @@ namespace MyInjectableLibrary
 		[DllImport("kernel32.dll", SetLastError = true)]
 		public static extern void SetLastError(uint dwErrorCode);
 
-		public struct Vector3
-		{
-			public float x;
-			public float y;
-			public float z;
-
-			public bool IsEmpty => Math.Abs(x) < 0.00001 && Math.Abs(y) < 0.00001 && Math.Abs(z) < 0.00001;
-
-			public void Add(Vector3 vec)
-			{
-				x += vec.x;
-				y += vec.y;
-				z += vec.y;
-			}
-			public void Subtract(Vector3 vec)
-			{
-				x -= vec.x;
-				y -= vec.y;
-				z -= vec.z;
-			}
-			public void Multiply(Vector3 vec)
-			{
-				x *= vec.x;
-				y *= vec.y;
-				y *= vec.z;
-			}
-		}
 
 		public struct Vector
 		{
@@ -304,12 +296,13 @@ namespace MyInjectableLibrary
 		public static extern bool VirtualProtect(IntPtr lpAddress, int dwSize,
 			MemoryProtectionFlags flNewProtect, out MemoryProtectionFlags lpflOldProtect);
 
+
 		[DllImport("kernel32.dll", SetLastError = true)]
 		[return: MarshalAs(UnmanagedType.Bool)]
 		public static extern bool FreeLibrary(IntPtr hModule);
 
 		[DllImport("kernel32.dll", SetLastError = true)]
-		public static extern IntPtr VirtualAlloc(IntPtr lpAddress, UIntPtr dwSize, AllocationTypeFlags lAllocationType, MemoryProtectionFlags flProtect);
+		public static extern IntPtr VirtualAlloc(IntPtr lpAddress, UIntPtr dwSize, AllocationTypeFlags flAllocationType, MemoryProtectionFlags flProtect);
 
 		[DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)]
 		public static extern bool VirtualFree(IntPtr lpAddress,
