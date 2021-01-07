@@ -26,13 +26,7 @@ namespace MyInjectableLibrary
 		{
 			CheckForIllegalCrossThreadCalls = false;
 
-			var values = Enum.GetValues(typeof(Keys)).Cast<Keys>();
-			foreach (var key in values)
-			{
-				comboBox1.Items.Add(key.ToString());
-			}
-
-			comboBox1.Text = "V";
+			
 		}
 
 		private void Button2_Click(object sender, EventArgs e)
@@ -114,35 +108,7 @@ namespace MyInjectableLibrary
 			
 		}
 
-		public enum WindowType : byte
-		{
-			// Token: 0x040001CA RID: 458
-			ActionSit = 2,
-			// Token: 0x040001CB RID: 459
-			ActionStand = 5,
-			// Token: 0x040001CC RID: 460
-			OptimizeInterface = 13,
-			// Token: 0x040001CD RID: 461
-			FusionInterface,
-			// Token: 0x040001CE RID: 462
-			BlacksmithInterface = 16,
-			// Token: 0x040001CF RID: 463
-			TeleportInterface,
-			// Token: 0x040001D0 RID: 464
-			EnhancementInterface = 19,
-			// Token: 0x040001D1 RID: 465
-			EidolonFeedInterface = 24,
-			// Token: 0x040001D2 RID: 466
-			ArcheologyInterface = 26,
-			// Token: 0x040001D3 RID: 467
-			AlchemyInterface,
-			// Token: 0x040001D4 RID: 468
-			EidolonOptimisationInterface,
-			// Token: 0x040001D5 RID: 469
-			HousingCraftInterface = 30,
-			// Token: 0x040001D6 RID: 470
-			BegleiterWnd
-		}
+	
 
 		private void CheckBox5_CheckedChanged(object sender, EventArgs e)
 		{

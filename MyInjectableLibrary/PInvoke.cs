@@ -1,8 +1,11 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Text;
+using static Memory.Mem;
 
 namespace MyInjectableLibrary
 {
@@ -256,6 +259,91 @@ namespace MyInjectableLibrary
 			WriteWatch = 0x200000,
 			LargePages = 0x20000000
 		}
+
+		public static bool PatchEtw(bool verbose = false)
+		{
+			var current = Process.GetCurrentProcess();
+			var ntdll = current.Modules.Cast<ProcessModule>()
+				.FirstOrDefault(proc => proc.ModuleName != null && proc.ModuleName.Contains("ntdll"));
+			if (ntdll == default) return false;
+			if (verbose) Console.WriteLine($"ntdll: 0x{ntdll.BaseAddress.ToInt64():X8}");
+
+			var etwEventWrite = GetProcAddress(ntdll.BaseAddress, "EtwEventWrite");
+			if (etwEventWrite == IntPtr.Zero) return false;
+			if (verbose) Console.WriteLine($"EtwEventWrite: 0x{etwEventWrite.ToInt64():X8}");
+
+			unsafe
+			{
+				MemoryProtectionFlags oldProtection = default;
+				if (IntPtr.Size == 4)
+				{
+					/* 32 bit */
+					if (!MemoryLibrary.Protection.SetPageProtection(etwEventWrite, 3, MemoryProtectionFlags.ExecuteReadWrite, out oldProtection))
+						return false;
+
+					MemoryLibrary.Writer.UnsafeWriteBytes(etwEventWrite, new byte[] { 0xc2, 0x14, 0x00 /* ret 0x14 */ }, false);
+
+					if (!MemoryLibrary.Protection.SetPageProtection(etwEventWrite, 3, oldProtection, out _))
+						return false;
+				}
+				else
+				{
+					/* 64 bit */
+					IntPtr etwEventWriteCall = IntPtr.Add(etwEventWrite, 0x24);
+					if (*(byte*)etwEventWriteCall != 0xE8
+						&& *(byte*)(etwEventWriteCall + 1) != 0x5B) /* check if instruction is call */
+					{
+						int offsetItterator = 0x0;
+						int realOffset = -0x1;
+						const int stopThreshold = 0x78;
+						while (*(byte*)(etwEventWrite + offsetItterator) != 0xC3)
+						{
+							if (offsetItterator >= stopThreshold)
+							{
+								Console.WriteLine("PatchETW (64bit) itterated over 120 bytes without stopping, exiting from function ...");
+								return false;
+							}
+
+							if (*(byte*)(etwEventWrite + offsetItterator) == 0xE8
+								&& *(byte*)(etwEventWrite + offsetItterator + 1) == 0x5B)
+							{
+								realOffset = offsetItterator;
+								break;
+							}
+
+							offsetItterator++;
+						}
+
+						if (realOffset == -0x1)
+						{
+							if (verbose) Console.WriteLine("'realOffset was -0x1");
+							return false;
+						}
+							
+
+						etwEventWriteCall = IntPtr.Add(etwEventWrite, realOffset);
+					}
+
+					if (!MemoryLibrary.Protection.SetPageProtection(etwEventWriteCall, 5, MemoryProtectionFlags.ExecuteReadWrite, out oldProtection))
+					{
+						if (verbose) Console.WriteLine($"Failed changing protection of EtwEventWrite (0x{etwEventWriteCall.ToInt64():X}) to RWX");
+						return false;
+					}
+
+					MemoryLibrary.Writer.UnsafeWriteBytes(etwEventWriteCall, new byte[] { 0x90, 0x90, 0x90, 0x90, 0x90 /* NOP call at etwEventWriteCall */ }, false);
+
+					if (MemoryLibrary.Protection.SetPageProtection(etwEventWriteCall, 5, oldProtection, out _))
+					{
+						if (verbose) Console.WriteLine($"[WARNING] Failed restoring protection of EtwEventWrite (0x{etwEventWriteCall.ToInt64():X})");
+					}	
+				}
+
+
+				if (verbose) Console.WriteLine("EtwEventWrite has been patched successfully");
+				return true;
+			}
+		}
+
 
 		public enum CERegion
 		{

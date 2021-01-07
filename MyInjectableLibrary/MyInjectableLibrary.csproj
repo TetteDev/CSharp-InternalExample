@@ -10,7 +10,7 @@
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>MyInjectableLibrary</RootNamespace>
     <AssemblyName>MyInjectableLibrary</AssemblyName>
-    <TargetFrameworkVersion>v4.5.2</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
     <TargetFrameworkProfile />
@@ -25,7 +25,7 @@
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
-    <PlatformTarget>x86</PlatformTarget>
+    <PlatformTarget>x64</PlatformTarget>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>default</LangVersion>
   </PropertyGroup>
@@ -62,9 +62,6 @@
       <Private>False</Private>
       <SpecificVersion>False</SpecificVersion>
     </Reference>
-    <Reference Include="EasyHook, Version=2.7.7097.0, Culture=neutral, PublicKeyToken=4b580fca19d0b0c5, processorArchitecture=MSIL">
-      <HintPath>..\packages\EasyHook.2.7.7097\lib\net40\EasyHook.dll</HintPath>
-    </Reference>
     <Reference Include="Reloaded.Assembler, Version=1.0.6.0, Culture=neutral, processorArchitecture=MSIL">
       <HintPath>..\packages\Reloaded.Assembler.1.0.6\lib\net452\Reloaded.Assembler.dll</HintPath>
     </Reference>
@@ -98,6 +95,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="DebugConsole.cs" />
+    <Compile Include="DSSOCK.cs" />
     <Compile Include="Enums.cs" />
     <Compile Include="ExampleForm.cs">
       <SubType>Form</SubType>
@@ -108,9 +106,7 @@
     <Compile Include="ExtensionMethods.cs" />
     <Compile Include="HelperMethods.cs" />
     <Compile Include="Main.cs" />
-    <Compile Include="Memory.cs" />
-    <Compile Include="Offsets.cs" />
-    <Compile Include="PatternEntry.cs" />
+    <Compile Include="MemoryLibrary.cs" />
     <Compile Include="PInvoke.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="SizeCache.cs" />
@@ -127,9 +123,21 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="DllExport">
-      <Version>1.7.0</Version>
+      <Version>1.7.3</Version>
       <Visible>false</Visible>
       <Wz>1</Wz>
+    </PackageReference>
+    <PackageReference Include="ilmerge">
+      <Version>3.0.41</Version>
+    </PackageReference>
+    <PackageReference Include="Memory.dll.x64">
+      <Version>1.2.21</Version>
+    </PackageReference>
+    <PackageReference Include="MSBuild.ILMerge.Task">
+      <Version>1.1.3</Version>
+    </PackageReference>
+    <PackageReference Include="Reloaded.Assembler">
+      <Version>1.0.9</Version>
     </PackageReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

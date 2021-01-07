@@ -5,8 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Security.Permissions;
 using System.Threading;
-using static hazedumper.signatures;
-using static hazedumper.netvars;
+
 using static MyInjectableLibrary.Enums;
 using MyInjectableLibrary;
 using Math = System.Math;
@@ -63,6 +62,36 @@ namespace MyInjectableLibrary
 					_41, _42, _43, _44
 				};
 			}
+
+			public float this[int index]
+			{
+				get
+				{
+					switch (index)
+					{
+						case 0: { return _11; }
+						case 1: { return _12; }
+						case 2: { return _13; }
+						case 3: { return _14; }
+
+						case 4: { return _21; }
+						case 5: { return _22; }
+						case 6: { return _23; }
+						case 7: { return _24; }
+
+						case 8: { return _32; }
+						case 9: { return _32; }
+						case 10: { return _33; }
+						case 11: { return _34; }
+
+						case 12: { return _41; }
+						case 13: { return _42; }
+						case 14: { return _43; }
+						case 15: { return _44; }
+						default: throw new IndexOutOfRangeException($"Range is from 0 to 15");
+					}
+				}
+			}
 		}
 
 		[StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -87,7 +116,7 @@ namespace MyInjectableLibrary
 			public float W;
 		}
 
-		[StructLayout(LayoutKind.Sequential, Pack =  1)]
+		[StructLayout(LayoutKind.Sequential, Pack = 1)]
 		public unsafe struct Vector3
 		{
 			public Vector3(float x, float y, float z)
@@ -98,7 +127,7 @@ namespace MyInjectableLibrary
 			}
 
 			public float X;
-			public float Y;	
+			public float Y;
 			public float Z;
 
 			public Vector3 Zero => new Vector3(0, 0, 0);
@@ -117,6 +146,46 @@ namespace MyInjectableLibrary
 					Y = this.X * matrix[1] + this.Y * matrix[5] + this.Z * matrix[9] + matrix[13],
 					Z = this.X * matrix[2] + this.Y * matrix[6] + this.Z * matrix[10] + matrix[14],
 					W = this.X * matrix[3] + this.Y * matrix[7] + this.Z * matrix[11] + matrix[15]
+				};
+
+				if (vec.W < 0.1f)
+				{
+					screenPosition = new Vector(0f, 0f);
+					return false;
+				}
+
+				Vector3 NDC = new Vector3
+				{
+					X = vec.X / vec.W,
+					Y = vec.Y / vec.W,
+					Z = vec.Z / vec.Z
+				};
+
+				int* w = (int*)0x00510C94;
+				int* h = (int*)0x00510C98;
+
+
+				screenPosition = new Vector
+				{
+					X = (*w / 2 * NDC.X) + (NDC.X + *w / 2),
+					Y = -(*h / 2 * NDC.Y) + (NDC.Y + *h / 2)
+				};
+				return true;
+			}
+			public bool World2Screen(float* matrix, out Vector screenPosition)
+			{
+				if (matrix == null)
+				{
+					screenPosition = new Vector(0f, 0f);
+					return false;
+				}
+
+				Vector4 vec = new Vector4
+				{
+					X = X * matrix[0] + Y * matrix[4] + Z * matrix[8] + matrix[12],
+					Y = X * matrix[1] + Y * matrix[5] + Z * matrix[9] + matrix[13],
+					Z = X * matrix[2] + Y * matrix[6] + Z * matrix[10] + matrix[14],
+					W = X * matrix[3] + Y * matrix[7] + Z * matrix[11] + matrix[15]
 				};
 
 				if (vec.W < 0.1f)
